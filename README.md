@@ -29,20 +29,54 @@ The core application depends on the provider-neutral `TextStore` interface in
 HTTP route -> TextStore -> D1 or R2 adapter -> runtime binding
 ```
 
-- `app/api/_shared/text-store-route.ts` owns request parsing, validation, and
-  the stable HTTP response shape used by both resources.
+- `app/api/_shared/text-store-route.ts` owns request parsing, validation, the
+  authorization gate, and the stable HTTP response shape used by both resources.
+- `storage/contracts.ts` also defines an optional `contentType` on stored items;
+  both adapters persist and return it (D1 in a column, R2 in object HTTP
+  metadata), defaulting to `text/plain; charset=utf-8`.
 - `storage/adapters/` contains the only D1- and R2-specific persistence logic.
 - `storage/create-services.ts` is the composition seam. Swap the adapters here
   to target another SQLite-compatible database or object store without changing
   the API routes or UI.
-- `runtime/storage-context.ts` isolates the request-context bridge required to
-  pass Worker bindings into Vinext route handlers.
+- `storage/authorizer.ts` defines the provider-neutral `Authorizer` boundary
+  (see Authorization below).
+- `runtime/storage-context.ts` isolates the request-context bridge that passes
+  the storage services and the request authorizer into Vinext route handlers.
 - `worker/index.ts` is the platform composition root; application and storage
   contract modules do not import Cloudflare runtime APIs.
-- `db/schema.ts` remains the migration source of truth, and generated SQL stays
-  under `drizzle/`.
+- `db/schema.ts` is the sole schema source of truth. The adapters do NOT create
+  tables at runtime; the generated migrations under `drizzle/` own the schema and
+  must be applied before first use (see D1 migrations).
 - `.openai/hosting.json` declares the logical D1 and R2 binding names managed by
   Sites.
+
+This repository is currently the hosted (OpenAI Sites) variant. A self-hosted
+Wrangler variant is planned; the core under `storage/`, `db/`, and `drizzle/` is
+kept platform-neutral so it can be shared between the two.
+
+## Authorization
+
+Every storage route calls an injected `Authorizer` (`storage/authorizer.ts`)
+before touching D1 or R2. The core ships no allow-all default: the composition
+root must supply a concrete authorizer, so the auth decision is always explicit.
+
+This hosted variant injects `platformTrustAuthorizer` in `worker/index.ts`,
+which trusts the Sites access policy in front of the Worker and allows every
+request that reaches it. A self-hosted deployment MUST replace this with a real
+check (for example a shared-secret or bearer-token authorizer reading from an
+env binding) before exposing the routes.
+
+## Setup
+
+Apply the D1 migrations before the first run so the `d1_values` table exists:
+
+```bash
+# Self-hosted (Wrangler): apply to your D1 database
+wrangler d1 migrations apply <DATABASE>
+```
+
+On the hosted Sites platform the migrations under `drizzle/` are applied by the
+platform before the new Worker version runs; no manual step is needed there.
 
 ## D1 migrations
 
@@ -52,7 +86,13 @@ example:
 - `0000_complex_thena.sql` creates `d1_values`.
 - `0001_add-content-type-demo.sql` adds a non-null `content_type` column with a
   backwards-compatible default, then inserts one idempotent `demo:migration`
-  row so the applied migration is visible in the D1 explorer.
+  row so the applied migration is visible in the D1 explorer. The `content_type`
+  column is real: it is part of the `TextStore` contract and is stored and
+  returned by both adapters.
+
+Timestamps are stored as ISO-8601 UTC (`strftime('%Y-%m-%dT%H:%M:%fZ','now')` as
+the column default, matching the adapter's `new Date().toISOString()`), so
+lexical ordering of `updated_at` equals chronological ordering.
 
 Treat committed migration files as immutable history. Change `db/schema.ts`,
 run `npm run db:generate -- --name <descriptive-name>`, inspect the generated
@@ -130,7 +170,8 @@ actions tied to the current ChatGPT user. Leave public content anonymous.
 - `npm run build`: type-check, build, and validate the deployable Sites artifact
 - `npm run start`: start the built Vinext application
 - `npm run typecheck`: run the strict TypeScript compiler without emitting files
-- `npm test`: type-check, build, validate, and verify the rendered development-preview metadata
+- `npm test`: run the buildless core test suite (storage adapters, migrations, and the route authorization gate) with no build step
+- `npm run test:build`: run the full Sites build and artifact validation (Linux only; needs GNU `timeout`)
 - `npm run validate:artifact`: recheck an existing artifact's manifest and ESM `default.fetch` export
 - `npm run db:generate`: generate Drizzle migrations after schema changes
 
