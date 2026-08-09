@@ -1,27 +1,41 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { Authorizer } from "../storage/authorizer";
 import type {
     StorageKind,
     StorageServices,
     TextStore,
 } from "../storage/contracts";
 
-const storageContext = new AsyncLocalStorage<StorageServices>();
+export type RequestContext = {
+    authorizer: Authorizer;
+    services: StorageServices;
+};
+
+const requestContext = new AsyncLocalStorage<RequestContext>();
 
 /**
- * Keeps Worker bindings request-scoped while leaving application code unaware
- * of Cloudflare's environment object.
+ * Keeps Worker bindings and the authorizer request-scoped while leaving
+ * application code unaware of Cloudflare's environment object.
  */
-export function runWithStorageServices<T>(
-    services: StorageServices,
+export function runWithRequestContext<T>(
+    context: RequestContext,
     callback: () => T
 ): T {
-    return storageContext.run(services, callback);
+    return requestContext.run(context, callback);
+}
+
+function currentContext(): RequestContext {
+    const context = requestContext.getStore();
+    if (!context) {
+        throw new Error("Request context is unavailable for this request.");
+    }
+    return context;
 }
 
 export function getStorageService(kind: StorageKind): TextStore {
-    const services = storageContext.getStore();
-    if (!services) {
-        throw new Error("Storage services are unavailable for this request.");
-    }
-    return services[kind];
+    return currentContext().services[kind];
+}
+
+export function getAuthorizer(): Authorizer {
+    return currentContext().authorizer;
 }
