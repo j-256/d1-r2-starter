@@ -375,14 +375,14 @@ function ResourceConsole({
         }
 
         setBusy(true);
-        setStatus(`Reading “${normalizedKey}”…`);
+        setStatus(`Reading "${normalizedKey}"…`);
         setStatusType("neutral");
         try {
             const { payload, response } = await request("GET", normalizedKey);
             assertStorageResponse(response, payload);
             setKey(payload.entry?.key ?? normalizedKey);
             setValue(payload.entry?.value ?? "");
-            setStatus(`Read “${normalizedKey}” successfully.`);
+            setStatus(`Read "${normalizedKey}" successfully.`);
             setStatusType("success");
         } catch (error) {
             setStatus(error instanceof Error ? error.message : "Read failed.");
@@ -401,7 +401,7 @@ function ResourceConsole({
         }
 
         setBusy(true);
-        setStatus(`Saving “${normalizedKey}”…`);
+        setStatus(`Saving "${normalizedKey}"…`);
         setStatusType("neutral");
         try {
             const { payload, response } = await request(
@@ -412,7 +412,7 @@ function ResourceConsole({
             assertStorageResponse(response, payload);
             setKey(payload.entry?.key ?? normalizedKey);
             await loadList(true);
-            setStatus(`Saved “${normalizedKey}” successfully.`);
+            setStatus(`Saved "${normalizedKey}" successfully.`);
             setStatusType("success");
         } catch (error) {
             setStatus(error instanceof Error ? error.message : "Save failed.");
@@ -427,7 +427,7 @@ function ResourceConsole({
         const targetKey = pendingDelete;
         setPendingDelete(null);
         setBusy(true);
-        setStatus(`Deleting “${targetKey}”…`);
+        setStatus(`Deleting "${targetKey}"…`);
         setStatusType("neutral");
         try {
             const { payload, response } = await request("DELETE", targetKey);
@@ -435,7 +435,7 @@ function ResourceConsole({
             setKey("");
             setValue("");
             await loadList(true);
-            setStatus(`Deleted “${targetKey}”.`);
+            setStatus(`Deleted "${targetKey}".`);
             setStatusType("success");
         } catch (error) {
             setStatus(error instanceof Error ? error.message : "Delete failed.");
@@ -566,10 +566,11 @@ function ResourceConsole({
                     <div className="field value-field">
                         <div className="field-label">
                             <label htmlFor={`${kind}-value`}>Text value</label>
-                            <span>{value.length.toLocaleString()}/100,000</span>
+                            <span>{new TextEncoder().encode(value).byteLength.toLocaleString()}/100,000 bytes</span>
                         </div>
                         <textarea
                             id={`${kind}-value`}
+                            // soft cap; server enforces the byte limit
                             maxLength={100000}
                             onChange={(event) => setValue(event.target.value)}
                             placeholder="Enter the value to store…"
