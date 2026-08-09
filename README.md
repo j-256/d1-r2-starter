@@ -1,8 +1,9 @@
-# vinext-starter
+# Starter storage control plane
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+A small, private D1 and R2 control plane running on
+[Vinext](https://github.com/cloudflare/vinext). The application is written in
+strict TypeScript and keeps provider-specific storage behavior behind a shared
+text-storage contract.
 
 ## Prerequisites
 
@@ -19,16 +20,34 @@ This starter does not use `wrangler.jsonc`.
 
 Scripts that need writable project-scoped home, npm, XDG, and temporary paths use `scripts/sites-env.sh`. The `dev` and `start` scripts honor the caller's runtime environment and keep Wrangler logs inside the checkout. The generated `.sites-runtime/` directory is disposable and ignored by Git.
 
-## Included Shape
+## Architecture
 
-- edit site code under `app/`
-- `app/chatgpt-auth.ts` provides optional dispatch-owned ChatGPT sign-in helpers
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+The core application depends on the provider-neutral `TextStore` interface in
+`storage/contracts.ts`, not on Cloudflare bindings:
+
+```text
+HTTP route -> TextStore -> D1 or R2 adapter -> runtime binding
+```
+
+- `app/api/_shared/text-store-route.ts` owns request parsing, validation, and
+  the stable HTTP response shape used by both resources.
+- `storage/adapters/` contains the only D1- and R2-specific persistence logic.
+- `storage/create-services.ts` is the composition seam. Swap the adapters here
+  to target another SQLite-compatible database or object store without changing
+  the API routes or UI.
+- `runtime/storage-context.ts` isolates the request-context bridge required to
+  pass Worker bindings into Vinext route handlers.
+- `worker/index.ts` is the platform composition root; application and storage
+  contract modules do not import Cloudflare runtime APIs.
+- `db/schema.ts` remains the migration source of truth, and generated SQL stays
+  under `drizzle/`.
+- `.openai/hosting.json` declares the logical D1 and R2 binding names managed by
+  Sites.
+
+The compiler enables strict mode plus unchecked-index, exact-optional-property,
+unused-code, implicit-return, fallthrough, and casing checks. Library declaration
+files remain skipped because Vinext, Next.js, and Cloudflare own those external
+types; all project TypeScript is still checked.
 
 ## Workspace Auth Headers
 
@@ -92,9 +111,10 @@ actions tied to the current ChatGPT user. Leave public content anonymous.
 
 - `npm run install:ci`: perform the one bounded lockfile install
 - `npm run dev`: start the Vite/Vinext development server
-- `npm run build`: build and validate the deployable Sites artifact
+- `npm run build`: type-check, build, and validate the deployable Sites artifact
 - `npm run start`: start the built Vinext application
-- `npm test`: build, validate, and verify the rendered development-preview metadata
+- `npm run typecheck`: run the strict TypeScript compiler without emitting files
+- `npm test`: type-check, build, validate, and verify the rendered development-preview metadata
 - `npm run validate:artifact`: recheck an existing artifact's manifest and ESM `default.fetch` export
 - `npm run db:generate`: generate Drizzle migrations after schema changes
 

@@ -6,25 +6,18 @@ import {
     useMemo,
     useState,
 } from "react";
+import {
+    STORAGE_KINDS,
+    type StorageKind,
+    type StoredTextItem,
+} from "../storage/contracts";
+import {
+    parseStorageApiPayload,
+    type StorageApiPayload,
+} from "../storage/api-payload";
 
-type StoreKind = "d1" | "r2";
-type View = "overview" | StoreKind;
+type View = "overview" | StorageKind;
 type Theme = "system" | "light" | "dark";
-
-type StoredItem = {
-    key: string;
-    size?: number;
-    updatedAt: string;
-    value?: string;
-};
-
-type ApiPayload = {
-    deleted?: boolean;
-    entries?: StoredItem[];
-    entry?: StoredItem;
-    error?: string;
-    objects?: StoredItem[];
-};
 
 type ResourceSummary = {
     bytes: number;
@@ -39,7 +32,7 @@ type Operation = {
     id: number;
     key: string;
     method: "GET" | "PUT" | "DELETE";
-    resource: StoreKind;
+    resource: StorageKind;
     status: number;
     succeeded: boolean;
     timestamp: string;
@@ -64,7 +57,7 @@ const resourceCopy = {
         name: "R2 bucket",
         shortName: "R2",
     },
-} satisfies Record<StoreKind, {
+} satisfies Record<StorageKind, {
     binding: string;
     description: string;
     itemLabel: string;
@@ -84,25 +77,37 @@ function formatBytes(bytes: number) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-async function parseResponse(response: Response) {
-    let payload: ApiPayload;
+function parseTheme(value: string): Theme {
+    if (value === "light" || value === "dark") return value;
+    return "system";
+}
+
+async function parseResponse(response: Response): Promise<StorageApiPayload> {
     try {
-        payload = (await response.json()) as ApiPayload;
+        return parseStorageApiPayload(await response.json());
     } catch {
-        payload = { error: "The server returned an unreadable response." };
+        return { error: "The server returned an unreadable response." };
     }
-    return payload;
+}
+
+function assertStorageResponse(
+    response: Response,
+    payload: StorageApiPayload
+): void {
+    if (!response.ok || payload.error) {
+        throw new Error(payload.error ?? `Request failed (${response.status})`);
+    }
 }
 
 async function executeStorageRequest(
-    kind: StoreKind,
+    kind: StorageKind,
     method: Operation["method"],
     targetKey: string,
     body?: { key: string; value: string }
 ) {
     const started = performance.now();
     let responseStatus = 0;
-    let payload: ApiPayload = {};
+    let payload: StorageApiPayload = {};
     let succeeded = false;
     let response: Response | null = null;
     let requestError: unknown;
@@ -112,15 +117,18 @@ async function executeStorageRequest(
         const url = method === "PUT"
             ? endpoint
             : `${endpoint}?key=${encodeURIComponent(targetKey)}`;
-        response = await fetch(url, {
-            body: body ? JSON.stringify(body) : undefined,
+        const requestInit: RequestInit = {
             cache: "no-store",
-            headers: body ? { "content-type": "application/json" } : undefined,
             method,
-        });
+        };
+        if (body) {
+            requestInit.body = JSON.stringify(body);
+            requestInit.headers = { "content-type": "application/json" };
+        }
+        response = await fetch(url, requestInit);
         responseStatus = response.status;
         payload = await parseResponse(response);
-        succeeded = response.ok;
+        succeeded = response.ok && !payload.error;
     } catch (error) {
         requestError = error;
         payload = {
@@ -142,21 +150,20 @@ async function executeStorageRequest(
     return { operation, payload, requestError, response };
 }
 
-function summarize(kind: StoreKind, payload: ApiPayload): ResourceSummary {
+function summarize(payload: StorageApiPayload): ResourceSummary {
     const items = payload.entries ?? payload.objects ?? [];
     const lastUpdated = items.reduce<string | undefined>((latest, item) => {
         if (!latest || item.updatedAt > latest) return item.updatedAt;
         return latest;
     }, undefined);
 
-    return {
-        bytes: kind === "r2"
-            ? items.reduce((total, item) => total + (item.size ?? 0), 0)
-            : items.reduce((total, item) => total + (item.value?.length ?? 0), 0),
+    const summary: ResourceSummary = {
+        bytes: items.reduce((total, item) => total + item.size, 0),
         count: items.length,
-        lastUpdated,
         status: "online",
     };
+    if (lastUpdated) summary.lastUpdated = lastUpdated;
+    return summary;
 }
 
 function StatusDot({ status }: { status: ResourceSummary["status"] }) {
@@ -168,14 +175,14 @@ function Overview({
     operations,
     summaries,
 }: {
-    onNavigate: (view: StoreKind) => void;
+    onNavigate: (view: StorageKind) => void;
     operations: Operation[];
-    summaries: Record<StoreKind, ResourceSummary>;
+    summaries: Record<StorageKind, ResourceSummary>;
 }) {
     return (
         <div className="overview-stack">
             <section className="summary-grid" aria-label="Resource summary">
-                {(["d1", "r2"] as StoreKind[]).map((kind) => {
+                {STORAGE_KINDS.map((kind) => {
                     const copy = resourceCopy[kind];
                     const summary = summaries[kind];
                     return (
@@ -286,13 +293,13 @@ function ResourceConsole({
     onSummary,
     refreshSeed,
 }: {
-    kind: StoreKind;
+    kind: StorageKind;
     onOperation: (operation: Operation, payload: unknown) => void;
-    onSummary: (kind: StoreKind, summary: ResourceSummary) => void;
+    onSummary: (kind: StorageKind, summary: ResourceSummary) => void;
     refreshSeed: number;
 }) {
     const copy = resourceCopy[kind];
-    const [items, setItems] = useState<StoredItem[]>([]);
+    const [items, setItems] = useState<StoredTextItem[]>([]);
     const [key, setKey] = useState("");
     const [value, setValue] = useState("");
     const [filter, setFilter] = useState("");
@@ -311,10 +318,10 @@ function ResourceConsole({
         try {
             const response = await fetch(endpoint, { cache: "no-store" });
             const payload = await parseResponse(response);
-            if (!response.ok) throw new Error(payload.error ?? `Request failed (${response.status})`);
+            assertStorageResponse(response, payload);
             const loadedItems = payload.entries ?? payload.objects ?? [];
             setItems(loadedItems);
-            onSummary(kind, summarize(kind, payload));
+            onSummary(kind, summarize(payload));
             if (!quiet) {
                 setStatus(`Loaded ${loadedItems.length} ${copy.itemLabel}.`);
                 setStatusType("success");
@@ -372,7 +379,7 @@ function ResourceConsole({
         setStatusType("neutral");
         try {
             const { payload, response } = await request("GET", normalizedKey);
-            if (!response.ok) throw new Error(payload.error ?? `Request failed (${response.status})`);
+            assertStorageResponse(response, payload);
             setKey(payload.entry?.key ?? normalizedKey);
             setValue(payload.entry?.value ?? "");
             setStatus(`Read “${normalizedKey}” successfully.`);
@@ -402,7 +409,7 @@ function ResourceConsole({
                 normalizedKey,
                 { key: normalizedKey, value }
             );
-            if (!response.ok) throw new Error(payload.error ?? `Request failed (${response.status})`);
+            assertStorageResponse(response, payload);
             setKey(payload.entry?.key ?? normalizedKey);
             await loadList(true);
             setStatus(`Saved “${normalizedKey}” successfully.`);
@@ -424,7 +431,7 @@ function ResourceConsole({
         setStatusType("neutral");
         try {
             const { payload, response } = await request("DELETE", targetKey);
-            if (!response.ok) throw new Error(payload.error ?? `Request failed (${response.status})`);
+            assertStorageResponse(response, payload);
             setKey("");
             setValue("");
             await loadList(true);
@@ -500,9 +507,7 @@ function ResourceConsole({
                                 >
                                     <span className="resource-key">{item.key}</span>
                                     <span className="resource-meta">
-                                        {typeof item.size === "number"
-                                            ? formatBytes(item.size)
-                                            : `${item.value?.length ?? 0} chars`}
+                                        {formatBytes(item.size)}
                                         <span aria-hidden="true">·</span>
                                         {formatDate(item.updatedAt)}
                                     </span>
@@ -644,7 +649,7 @@ export default function Home() {
     const [refreshSeed, setRefreshSeed] = useState(0);
     const [operations, setOperations] = useState<Operation[]>([]);
     const [lastResponse, setLastResponse] = useState<ResponseSnapshot | null>(null);
-    const [summaries, setSummaries] = useState<Record<StoreKind, ResourceSummary>>({
+    const [summaries, setSummaries] = useState<Record<StorageKind, ResourceSummary>>({
         d1: { bytes: 0, count: 0, status: "loading" },
         r2: { bytes: 0, count: 0, status: "loading" },
     });
@@ -661,25 +666,25 @@ export default function Home() {
 
     useEffect(() => {
         if (theme === "system") {
-            delete document.documentElement.dataset.theme;
+            delete document.documentElement.dataset["theme"];
         } else {
-            document.documentElement.dataset.theme = theme;
+            document.documentElement.dataset["theme"] = theme;
         }
         window.localStorage.setItem("starter-control-plane:theme:v1", theme);
     }, [theme]);
 
-    const updateSummary = useCallback((kind: StoreKind, summary: ResourceSummary) => {
+    const updateSummary = useCallback((kind: StorageKind, summary: ResourceSummary) => {
         setSummaries((current) => ({ ...current, [kind]: summary }));
     }, []);
 
     const loadOverview = useCallback(async () => {
-        await Promise.all(((["d1", "r2"] as StoreKind[]).map(async (kind) => {
+        await Promise.all(STORAGE_KINDS.map(async (kind) => {
             updateSummary(kind, { bytes: 0, count: 0, status: "loading" });
             try {
                 const response = await fetch(`/api/${kind}`, { cache: "no-store" });
                 const payload = await parseResponse(response);
-                if (!response.ok) throw new Error(payload.error ?? `Request failed (${response.status})`);
-                updateSummary(kind, summarize(kind, payload));
+                assertStorageResponse(response, payload);
+                updateSummary(kind, summarize(payload));
             } catch (error) {
                 updateSummary(kind, {
                     bytes: 0,
@@ -688,7 +693,7 @@ export default function Home() {
                     status: "error",
                 });
             }
-        })));
+        }));
     }, [updateSummary]);
 
     useEffect(() => {
@@ -767,7 +772,10 @@ export default function Home() {
                     <div className="topbar-actions">
                         <label className="theme-control">
                             <span>Theme</span>
-                            <select value={theme} onChange={(event) => setTheme(event.target.value as Theme)}>
+                            <select
+                                value={theme}
+                                onChange={(event) => setTheme(parseTheme(event.target.value))}
+                            >
                                 <option value="system">System</option>
                                 <option value="light">Light</option>
                                 <option value="dark">Dark</option>
