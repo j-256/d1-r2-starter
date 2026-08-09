@@ -5,11 +5,25 @@ import {
     handleImageOptimization,
 } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { runWithStorageServices } from "../runtime/storage-context";
+import { runWithRequestContext } from "../runtime/storage-context";
+import type { Authorizer } from "../storage/authorizer";
 import {
     createStorageServices,
     type RuntimeStorageBindings,
 } from "../storage/create-services";
+
+/**
+ * Authorization for THIS (hosted) variant is enforced by the Sites access
+ * policy in front of the Worker; this authorizer trusts that upstream layer
+ * and allows every request that reaches the Worker. A self-hosted deployment
+ * (e.g. the Wrangler variant) MUST replace this with a real check, such as a
+ * shared-secret or bearer-token authorizer reading from an env binding.
+ */
+const platformTrustAuthorizer: Authorizer = {
+    async authorize() {
+        return { ok: true };
+    },
+};
 
 interface AssetFetcher {
     fetch(request: Request): Promise<Response>;
@@ -76,8 +90,8 @@ const worker = {
         }
 
         const services = createStorageServices(env);
-        return runWithStorageServices(
-            services,
+        return runWithRequestContext(
+            { authorizer: platformTrustAuthorizer, services },
             () => handler.fetch(request, env, ctx)
         );
     },
