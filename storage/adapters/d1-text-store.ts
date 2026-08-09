@@ -3,6 +3,7 @@ import type {
     StoredTextItem,
     TextStore,
 } from "../contracts";
+import { DEFAULT_CONTENT_TYPE } from "../contracts.ts";
 
 export type SqlRunResult = {
     meta: {
@@ -21,25 +22,7 @@ export interface SqlDatabase {
     prepare(query: string): SqlPreparedStatement;
 }
 
-type D1ValueRow = {
-    key: string;
-    size: number;
-    updatedAt: string;
-    value: string;
-};
-
 type Clock = () => string;
-
-const createTableSql = `
-    CREATE TABLE IF NOT EXISTS d1_values (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-`;
-
-const schemaInitializations = new WeakMap<SqlDatabase, Promise<void>>();
 
 function systemClock(): string {
     return new Date().toISOString();
@@ -49,7 +32,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseValueRow(value: unknown): D1ValueRow {
+function parseValueRow(value: unknown, includeValue: boolean): StoredTextItem {
     if (
         !isRecord(value) ||
         typeof value["key"] !== "string" ||
@@ -57,34 +40,22 @@ function parseValueRow(value: unknown): D1ValueRow {
         !Number.isFinite(value["size"]) ||
         value["size"] < 0 ||
         typeof value["updatedAt"] !== "string" ||
-        typeof value["value"] !== "string"
+        typeof value["contentType"] !== "string" ||
+        (includeValue && typeof value["value"] !== "string")
     ) {
         throw new Error("D1 returned an invalid d1_values row.");
     }
 
-    return {
+    const item: StoredTextItem = {
         key: value["key"],
         size: value["size"],
         updatedAt: value["updatedAt"],
-        value: value["value"],
+        contentType: value["contentType"],
     };
-}
-
-function ensureSchema(database: SqlDatabase): Promise<void> {
-    const existingInitialization = schemaInitializations.get(database);
-    if (existingInitialization) return existingInitialization;
-
-    const initialization = database
-        .prepare(createTableSql)
-        .run()
-        .then(() => undefined)
-        .catch((error: unknown) => {
-            schemaInitializations.delete(database);
-            throw error;
-        });
-
-    schemaInitializations.set(database, initialization);
-    return initialization;
+    if (includeValue) {
+        item.value = value["value"] as string;
+    }
+    return item;
 }
 
 /** Adapts a D1-compatible SQLite binding to the provider-neutral TextStore API. */
@@ -97,34 +68,32 @@ export class D1TextStore implements TextStore {
         this.clock = clock;
     }
 
-    async delete(key: string): Promise<boolean> {
-        await ensureSchema(this.database);
-        const result = await this.database
+    async delete(key: string): Promise<void> {
+        await this.database
             .prepare("DELETE FROM d1_values WHERE key = ?1")
             .bind(key)
             .run();
-        return result.meta.changes > 0;
     }
 
     async get(key: string): Promise<StoredTextItem | null> {
-        await ensureSchema(this.database);
         const row = await this.database
             .prepare(
                 `SELECT key, value, length(CAST(value AS BLOB)) AS size,
+                        content_type AS contentType,
                         updated_at AS updatedAt
                  FROM d1_values
                  WHERE key = ?1`
             )
             .bind(key)
             .first();
-        return row === null ? null : parseValueRow(row);
+        return row === null ? null : parseValueRow(row, true);
     }
 
     async list(limit: number): Promise<StoredTextItem[]> {
-        await ensureSchema(this.database);
         const result = await this.database
             .prepare(
-                `SELECT key, value, length(CAST(value AS BLOB)) AS size,
+                `SELECT key, length(CAST(value AS BLOB)) AS size,
+                        content_type AS contentType,
                         updated_at AS updatedAt
                  FROM d1_values
                  ORDER BY updated_at DESC, key ASC
@@ -132,27 +101,29 @@ export class D1TextStore implements TextStore {
             )
             .bind(limit)
             .all();
-        return result.results.map(parseValueRow);
+        return result.results.map((row) => parseValueRow(row, false));
     }
 
     async put(item: PutTextItem): Promise<StoredTextItem> {
-        await ensureSchema(this.database);
         const updatedAt = this.clock();
+        const contentType = item.contentType ?? DEFAULT_CONTENT_TYPE;
         await this.database
             .prepare(
-                `INSERT INTO d1_values (key, value, updated_at)
-                 VALUES (?1, ?2, ?3)
+                `INSERT INTO d1_values (key, value, content_type, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(key) DO UPDATE SET
                      value = excluded.value,
+                     content_type = excluded.content_type,
                      updated_at = excluded.updated_at`
             )
-            .bind(item.key, item.value, updatedAt)
+            .bind(item.key, item.value, contentType, updatedAt)
             .run();
 
         return {
             key: item.key,
             size: new TextEncoder().encode(item.value).byteLength,
             updatedAt,
+            contentType,
             value: item.value,
         };
     }
