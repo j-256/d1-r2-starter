@@ -1,8 +1,8 @@
-import { getStorageService } from "../../../runtime/storage-context";
+import { getAuthorizer, getStorageService } from "../../../runtime/storage-context.ts";
 import {
     STORAGE_LIMITS,
     type StorageKind,
-} from "../../../storage/contracts";
+} from "../../../storage/contracts.ts";
 
 type ValidationResult<T> =
     | { ok: true; value: T }
@@ -11,6 +11,7 @@ type ValidationResult<T> =
 type WritePayload = {
     key: string;
     value: string;
+    contentType?: string;
 };
 
 const resourceLabels = {
@@ -54,20 +55,27 @@ function validateWritePayload(value: unknown): ValidationResult<WritePayload> {
     if (typeof value["value"] !== "string") {
         return { error: "The value must be text.", ok: false };
     }
-    if (value["value"].length > STORAGE_LIMITS.valueCharacters) {
+    const byteLength = new TextEncoder().encode(value["value"]).byteLength;
+    if (byteLength > STORAGE_LIMITS.valueBytes) {
         return {
-            error: `Values may contain at most ${STORAGE_LIMITS.valueCharacters.toLocaleString()} characters.`,
+            error: `Values may contain at most ${STORAGE_LIMITS.valueBytes.toLocaleString()} bytes.`,
             ok: false,
         };
     }
 
-    return {
-        ok: true,
-        value: {
-            key: keyResult.value,
-            value: value["value"],
-        },
+    const payload: WritePayload = {
+        key: keyResult.value,
+        value: value["value"],
     };
+    if (typeof value["contentType"] === "string" && value["contentType"].trim()) {
+        const contentType = value["contentType"].trim();
+        if (contentType.length > STORAGE_LIMITS.keyCharacters) {
+            return { error: "The content type is too long.", ok: false };
+        }
+        payload.contentType = contentType;
+    }
+
+    return { ok: true, value: payload };
 }
 
 function noStore(payload: unknown, init?: ResponseInit): Response {
@@ -76,12 +84,21 @@ function noStore(payload: unknown, init?: ResponseInit): Response {
     return Response.json(payload, { ...init, headers });
 }
 
+async function guard(request: Request): Promise<Response | null> {
+    const result = await getAuthorizer().authorize(request);
+    if (result.ok) return null;
+    return noStore({ error: result.error }, { status: result.status });
+}
+
 export function createTextStoreRoute(kind: StorageKind) {
     const label = resourceLabels[kind];
 
     return {
         async delete(request: Request): Promise<Response> {
             try {
+                const denied = await guard(request);
+                if (denied) return denied;
+
                 const keyResult = validateKey(
                     new URL(request.url).searchParams.get("key")
                 );
@@ -92,10 +109,8 @@ export function createTextStoreRoute(kind: StorageKind) {
                     );
                 }
 
-                const deleted = await getStorageService(kind).delete(
-                    keyResult.value
-                );
-                return Response.json({ deleted, key: keyResult.value });
+                await getStorageService(kind).delete(keyResult.value);
+                return Response.json({ ok: true, key: keyResult.value });
             } catch (error) {
                 return Response.json(
                     { error: errorMessage(error, kind) },
@@ -106,6 +121,9 @@ export function createTextStoreRoute(kind: StorageKind) {
 
         async get(request: Request): Promise<Response> {
             try {
+                const denied = await guard(request);
+                if (denied) return denied;
+
                 const key = new URL(request.url).searchParams.get("key");
                 if (key !== null) {
                     const keyResult = validateKey(key);
@@ -122,7 +140,7 @@ export function createTextStoreRoute(kind: StorageKind) {
                     if (!entry) {
                         return noStore(
                             {
-                                error: `${label} key “${keyResult.value}” was not found.`,
+                                error: `${label} key "${keyResult.value}" was not found.`,
                             },
                             { status: 404 }
                         );
@@ -146,6 +164,9 @@ export function createTextStoreRoute(kind: StorageKind) {
 
         async put(request: Request): Promise<Response> {
             try {
+                const denied = await guard(request);
+                if (denied) return denied;
+
                 let body: unknown;
                 try {
                     body = await request.json();
