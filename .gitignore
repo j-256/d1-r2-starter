@@ -37,6 +37,7 @@ yarn-error.log*
 next-env.d.ts
 *.tsbuildinfo
 /dist/
+/.vinext/
 /.wrangler/
 /.sites-runtime/
 /outputs/
