@@ -19,6 +19,7 @@ type TestRow = {
     key: string;
     size: number;
     updatedAt: string;
+    contentType: string;
     value: string;
 };
 
@@ -39,30 +40,36 @@ class FakeSqlStatement implements SqlPreparedStatement {
 
     async all(): Promise<{ results: unknown[] }> {
         const limit = this.numberAt(0);
-        const rows = [...this.database.rows.values()]
-            .sort((left, right) => (
-                right.updatedAt.localeCompare(left.updatedAt) ||
-                left.key.localeCompare(right.key)
-            ))
-            .slice(0, limit);
-        return { results: rows };
+        return {
+            results: [...this.database.rows.values()]
+                .sort((left, right) => (
+                    right.updatedAt.localeCompare(left.updatedAt) ||
+                    left.key.localeCompare(right.key)
+                ))
+                .slice(0, limit)
+                .map((row) => ({
+                    key: row.key,
+                    size: row.size,
+                    contentType: row.contentType,
+                    updatedAt: row.updatedAt,
+                })),
+        };
     }
 
     async first(): Promise<unknown | null> {
-        return this.database.rows.get(this.stringAt(0)) ?? null;
+        const row = this.database.rows.get(this.stringAt(0));
+        return row ?? null;
     }
 
     async run(): Promise<SqlRunResult> {
-        if (this.query.includes("CREATE TABLE")) {
-            this.database.schemaInitializations += 1;
-            return { meta: { changes: 0 } };
-        }
         if (this.query.includes("INSERT INTO d1_values")) {
+            const value = this.stringAt(1);
             const row: TestRow = {
                 key: this.stringAt(0),
-                size: new TextEncoder().encode(this.stringAt(1)).byteLength,
-                value: this.stringAt(1),
-                updatedAt: this.stringAt(2),
+                size: new TextEncoder().encode(value).byteLength,
+                value,
+                contentType: this.stringAt(2),
+                updatedAt: this.stringAt(3),
             };
             this.database.rows.set(row.key, row);
             return { meta: { changes: 1 } };
@@ -89,7 +96,6 @@ class FakeSqlStatement implements SqlPreparedStatement {
 
 class FakeSqlDatabase implements SqlDatabase {
     readonly rows = new Map<string, TestRow>();
-    schemaInitializations = 0;
 
     prepare(query: string): SqlPreparedStatement {
         return new FakeSqlStatement(this, query);
@@ -119,9 +125,9 @@ class FakeObjectBucket implements ObjectBucket {
             httpMetadata: { contentType: string };
         }
     ): Promise<ObjectMetadata> {
-        assert.equal(options.httpMetadata.contentType, "text/plain; charset=utf-8");
         const metadata: ObjectMetadata = {
             customMetadata: options.customMetadata,
+            httpMetadata: options.httpMetadata,
             key,
             size: new TextEncoder().encode(value).byteLength,
             uploaded: new Date("2026-01-01T00:00:00.000Z"),
@@ -141,37 +147,48 @@ async function verifyTextStore(store: TextStore): Promise<void> {
     const value = "strict TypeScript";
 
     assert.equal(await store.get(key), null);
+
     const written = await store.put({ key, value });
     assert.equal(written.key, key);
     assert.equal(written.value, value);
+    assert.equal(written.contentType, "text/plain; charset=utf-8");
+
     assert.deepEqual(await store.get(key), written);
+
+    // Explicit contentType is preserved
+    const custom = await store.put({
+        key: "portable:json",
+        value: "{}",
+        contentType: "application/json",
+    });
+    assert.equal(custom.contentType, "application/json");
+    assert.equal((await store.get("portable:json"))?.contentType, "application/json");
+
+    // list() returns metadata only, never the body
     const listed = await store.list(50);
-    assert.equal(listed.length, 1);
-    assert.equal(listed[0]?.key, written.key);
-    assert.equal(listed[0]?.updatedAt, written.updatedAt);
-    assert.equal(await store.delete(key), true);
+    const listedKeys = listed.map((item) => item.key).sort();
+    assert.deepEqual(listedKeys, ["portable:json", "portable:test"]);
+    for (const item of listed) {
+        assert.equal(item.value, undefined);
+        assert.equal(typeof item.contentType, "string");
+    }
+
+    // delete() is idempotent and returns void
+    assert.equal(await store.delete(key), undefined);
     assert.equal(await store.get(key), null);
+    assert.equal(await store.delete(key), undefined); // second delete: no throw
 }
 
 test("D1 and R2 adapters honor the same TextStore contract", async (context) => {
     const now = () => "2026-08-09T00:00:00.000Z";
-    const database = new FakeSqlDatabase();
 
     await context.test("D1", async () => {
-        await verifyTextStore(new D1TextStore(database, now));
-        assert.equal(database.schemaInitializations, 1);
+        await verifyTextStore(new D1TextStore(new FakeSqlDatabase(), now));
     });
 
     await context.test("R2", async () => {
         await verifyTextStore(new R2TextStore(new FakeObjectBucket(), now));
     });
-});
-
-test("D1 schema initialization is shared by adapters for one binding", async () => {
-    const database = new FakeSqlDatabase();
-    await new D1TextStore(database).list(10);
-    await new D1TextStore(database).list(10);
-    assert.equal(database.schemaInitializations, 1);
 });
 
 test("API payload parsing rejects malformed provider data", () => {
