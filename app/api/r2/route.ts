@@ -1,12 +1,13 @@
-import { env } from "cloudflare:workers";
+import { getStorageBindings } from "../../../runtime/storage-bindings";
 
 export const dynamic = "force-dynamic";
 
 function getBucket() {
-    if (!env.BUCKET) {
+    const bucket = getStorageBindings().BUCKET;
+    if (!bucket) {
         throw new Error("The Cloudflare R2 binding is unavailable.");
     }
-    return env.BUCKET;
+    return bucket;
 }
 
 function errorMessage(error: unknown) {

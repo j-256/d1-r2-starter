@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { getStorageBindings } from "../runtime/storage-bindings";
 
 export type D1Value = {
     key: string;
@@ -17,10 +17,11 @@ const schemaSql = `
 let schemaPromise: Promise<void> | null = null;
 
 function getBinding() {
-    if (!env.DB) {
+    const binding = getStorageBindings().DB;
+    if (!binding) {
         throw new Error("The Cloudflare D1 binding is unavailable.");
     }
-    return env.DB;
+    return binding;
 }
 
 async function ensureSchema() {
