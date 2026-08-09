@@ -192,9 +192,21 @@ test("D1 and R2 adapters honor the same TextStore contract", async (context) => 
 });
 
 test("API payload parsing rejects malformed provider data", () => {
-    assert.deepEqual(parseStorageApiPayload({ entries: [] }), { entries: [] });
+    const validEntry = {
+        key: "k",
+        size: 1,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        contentType: "text/plain; charset=utf-8",
+    };
+    assert.deepEqual(parseStorageApiPayload({ entries: [validEntry] }), {
+        entries: [validEntry],
+    });
     assert.deepEqual(parseStorageApiPayload({ entries: [{ key: 1 }] }), {
         error: "The server returned an invalid D1 list.",
+    });
+    assert.deepEqual(parseStorageApiPayload({ ok: true, key: "k" }), {
+        ok: true,
+        key: "k",
     });
     assert.deepEqual(parseStorageApiPayload({}), {
         error: "The server returned an unexpected response.",

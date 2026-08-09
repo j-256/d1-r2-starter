@@ -1,7 +1,7 @@
 import type { StoredTextItem } from "./contracts";
 
 export type StorageApiPayload = {
-    deleted?: boolean;
+    ok?: boolean;
     entries?: StoredTextItem[];
     entry?: StoredTextItem;
     error?: string;
@@ -20,7 +20,8 @@ function parseItem(value: unknown): StoredTextItem | null {
         typeof value["size"] !== "number" ||
         !Number.isFinite(value["size"]) ||
         value["size"] < 0 ||
-        typeof value["updatedAt"] !== "string"
+        typeof value["updatedAt"] !== "string" ||
+        typeof value["contentType"] !== "string"
     ) {
         return null;
     }
@@ -29,6 +30,7 @@ function parseItem(value: unknown): StoredTextItem | null {
         key: value["key"],
         size: value["size"],
         updatedAt: value["updatedAt"],
+        contentType: value["contentType"],
     };
     if (typeof value["value"] === "string") {
         item.value = value["value"];
@@ -57,8 +59,8 @@ export function parseStorageApiPayload(value: unknown): StorageApiPayload {
 
     const payload: StorageApiPayload = {};
     let recognizedField = false;
-    if (typeof value["deleted"] === "boolean") {
-        payload.deleted = value["deleted"];
+    if (typeof value["ok"] === "boolean") {
+        payload.ok = value["ok"];
         recognizedField = true;
     }
     if (typeof value["error"] === "string") {
