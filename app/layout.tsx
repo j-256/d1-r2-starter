@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Starter",
-  description: "A minimal Cloudflare D1 and R2 storage workbench.",
+  description: "A private Cloudflare D1 and R2 storage control plane.",
   other: {
     "codex-preview": "development",
   },

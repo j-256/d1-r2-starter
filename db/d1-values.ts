@@ -30,7 +30,7 @@ async function ensureSchema() {
             .prepare(schemaSql)
             .run()
             .then(() => undefined)
-            .catch((error) => {
+            .catch((error: unknown) => {
                 schemaPromise = null;
                 throw error;
             });

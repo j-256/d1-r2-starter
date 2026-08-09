@@ -1,8 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useState,
+} from "react";
 
 type StoreKind = "d1" | "r2";
+type View = "overview" | StoreKind;
+type Theme = "system" | "light" | "dark";
 
 type StoredItem = {
     key: string;
@@ -11,263 +18,804 @@ type StoredItem = {
     value?: string;
 };
 
-type StoragePanelProps = {
-    description: string;
-    kind: StoreKind;
-    title: string;
+type ApiPayload = {
+    deleted?: boolean;
+    entries?: StoredItem[];
+    entry?: StoredItem;
+    error?: string;
+    objects?: StoredItem[];
 };
 
-function formatDate(value: string) {
+type ResourceSummary = {
+    bytes: number;
+    count: number;
+    error?: string;
+    lastUpdated?: string;
+    status: "loading" | "online" | "error";
+};
+
+type Operation = {
+    duration: number;
+    id: number;
+    key: string;
+    method: "GET" | "PUT" | "DELETE";
+    resource: StoreKind;
+    status: number;
+    succeeded: boolean;
+    timestamp: string;
+};
+
+type ResponseSnapshot = Operation & {
+    payload: unknown;
+};
+
+const resourceCopy = {
+    d1: {
+        binding: "DB",
+        description: "Structured key/value rows backed by SQLite.",
+        itemLabel: "rows",
+        name: "D1 database",
+        shortName: "D1",
+    },
+    r2: {
+        binding: "BUCKET",
+        description: "Text objects addressed directly by object key.",
+        itemLabel: "objects",
+        name: "R2 bucket",
+        shortName: "R2",
+    },
+} satisfies Record<StoreKind, {
+    binding: string;
+    description: string;
+    itemLabel: string;
+    name: string;
+    shortName: string;
+}>;
+
+function formatDate(value?: string) {
+    if (!value) return "No data yet";
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-async function readJson(response: Response) {
-    const payload = (await response.json()) as {
-        deleted?: boolean;
-        entries?: StoredItem[];
-        entry?: StoredItem;
-        error?: string;
-        objects?: StoredItem[];
-    };
+function formatBytes(bytes: number) {
+    if (bytes < 1024) return `${bytes.toLocaleString()} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
-    if (!response.ok) {
-        throw new Error(payload.error ?? `Request failed (${response.status})`);
+async function parseResponse(response: Response) {
+    let payload: ApiPayload;
+    try {
+        payload = (await response.json()) as ApiPayload;
+    } catch {
+        payload = { error: "The server returned an unreadable response." };
     }
-
     return payload;
 }
 
-function StoragePanel({ description, kind, title }: StoragePanelProps) {
+async function executeStorageRequest(
+    kind: StoreKind,
+    method: Operation["method"],
+    targetKey: string,
+    body?: { key: string; value: string }
+) {
+    const started = performance.now();
+    let responseStatus = 0;
+    let payload: ApiPayload = {};
+    let succeeded = false;
+    let response: Response | null = null;
+    let requestError: unknown;
+
+    try {
+        const endpoint = `/api/${kind}`;
+        const url = method === "PUT"
+            ? endpoint
+            : `${endpoint}?key=${encodeURIComponent(targetKey)}`;
+        response = await fetch(url, {
+            body: body ? JSON.stringify(body) : undefined,
+            cache: "no-store",
+            headers: body ? { "content-type": "application/json" } : undefined,
+            method,
+        });
+        responseStatus = response.status;
+        payload = await parseResponse(response);
+        succeeded = response.ok;
+    } catch (error) {
+        requestError = error;
+        payload = {
+            error: error instanceof Error ? error.message : "Network request failed.",
+        };
+    }
+
+    const operation: Operation = {
+        duration: Math.max(1, Math.round(performance.now() - started)),
+        id: Date.now() + Math.round(Math.random() * 1000),
+        key: targetKey,
+        method,
+        resource: kind,
+        status: responseStatus,
+        succeeded,
+        timestamp: new Date().toISOString(),
+    };
+
+    return { operation, payload, requestError, response };
+}
+
+function summarize(kind: StoreKind, payload: ApiPayload): ResourceSummary {
+    const items = payload.entries ?? payload.objects ?? [];
+    const lastUpdated = items.reduce<string | undefined>((latest, item) => {
+        if (!latest || item.updatedAt > latest) return item.updatedAt;
+        return latest;
+    }, undefined);
+
+    return {
+        bytes: kind === "r2"
+            ? items.reduce((total, item) => total + (item.size ?? 0), 0)
+            : items.reduce((total, item) => total + (item.value?.length ?? 0), 0),
+        count: items.length,
+        lastUpdated,
+        status: "online",
+    };
+}
+
+function StatusDot({ status }: { status: ResourceSummary["status"] }) {
+    return <span className={`status-dot ${status}`} aria-hidden="true" />;
+}
+
+function Overview({
+    onNavigate,
+    operations,
+    summaries,
+}: {
+    onNavigate: (view: StoreKind) => void;
+    operations: Operation[];
+    summaries: Record<StoreKind, ResourceSummary>;
+}) {
+    return (
+        <div className="overview-stack">
+            <section className="summary-grid" aria-label="Resource summary">
+                {(["d1", "r2"] as StoreKind[]).map((kind) => {
+                    const copy = resourceCopy[kind];
+                    const summary = summaries[kind];
+                    return (
+                        <article className="summary-card" key={kind}>
+                            <div className="summary-card-heading">
+                                <div className={`resource-mark ${kind}`}>
+                                    {copy.shortName}
+                                </div>
+                                <div>
+                                    <h2>{copy.name}</h2>
+                                    <p>{copy.binding}</p>
+                                </div>
+                                <span className="health-label">
+                                    <StatusDot status={summary.status} />
+                                    {summary.status === "loading"
+                                        ? "Connecting"
+                                        : summary.status === "online"
+                                            ? "Online"
+                                            : "Error"}
+                                </span>
+                            </div>
+                            <p className="summary-description">{copy.description}</p>
+                            <div className="summary-metrics">
+                                <div>
+                                    <span>Loaded {copy.itemLabel}</span>
+                                    <strong>{summary.count.toLocaleString()}</strong>
+                                </div>
+                                <div>
+                                    <span>{kind === "r2" ? "Loaded size" : "Value data"}</span>
+                                    <strong>{formatBytes(summary.bytes)}</strong>
+                                </div>
+                                <div>
+                                    <span>Latest update</span>
+                                    <strong className="date-value">
+                                        {formatDate(summary.lastUpdated)}
+                                    </strong>
+                                </div>
+                            </div>
+                            {summary.error && (
+                                <p className="resource-error">{summary.error}</p>
+                            )}
+                            <button
+                                className="open-resource"
+                                onClick={() => onNavigate(kind)}
+                                type="button"
+                            >
+                                Open {copy.shortName} explorer
+                                <span aria-hidden="true">→</span>
+                            </button>
+                        </article>
+                    );
+                })}
+            </section>
+
+            <section className="activity-card" aria-labelledby="activity-title">
+                <div className="section-heading">
+                    <div>
+                        <p className="section-kicker">This session</p>
+                        <h2 id="activity-title">Recent operations</h2>
+                    </div>
+                    <span>{operations.length} recorded</span>
+                </div>
+                {operations.length ? (
+                    <div className="activity-table-wrap">
+                        <table className="activity-table">
+                            <thead>
+                                <tr>
+                                    <th>Resource</th>
+                                    <th>Operation</th>
+                                    <th>Key</th>
+                                    <th>Result</th>
+                                    <th>Latency</th>
+                                    <th>Time</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {operations.slice(0, 10).map((operation) => (
+                                    <tr key={operation.id}>
+                                        <td>{resourceCopy[operation.resource].shortName}</td>
+                                        <td><code>{operation.method}</code></td>
+                                        <td className="key-cell">{operation.key || "List"}</td>
+                                        <td>
+                                            <span className={operation.succeeded ? "result-ok" : "result-error"}>
+                                                {operation.status || "Network error"}
+                                            </span>
+                                        </td>
+                                        <td>{operation.duration} ms</td>
+                                        <td>{new Date(operation.timestamp).toLocaleTimeString()}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                ) : (
+                    <div className="activity-empty">
+                        <p>No operations yet.</p>
+                        <span>Reads, writes, and deletes will appear here as you work.</span>
+                    </div>
+                )}
+            </section>
+        </div>
+    );
+}
+
+function ResourceConsole({
+    kind,
+    onOperation,
+    onSummary,
+    refreshSeed,
+}: {
+    kind: StoreKind;
+    onOperation: (operation: Operation, payload: unknown) => void;
+    onSummary: (kind: StoreKind, summary: ResourceSummary) => void;
+    refreshSeed: number;
+}) {
+    const copy = resourceCopy[kind];
     const [items, setItems] = useState<StoredItem[]>([]);
     const [key, setKey] = useState("");
     const [value, setValue] = useState("");
-    const [status, setStatus] = useState("Loading saved keys…");
+    const [filter, setFilter] = useState("");
+    const [status, setStatus] = useState("Select an item or create a new one.");
+    const [statusType, setStatusType] = useState<"neutral" | "success" | "error">("neutral");
     const [busy, setBusy] = useState(false);
+    const [pendingDelete, setPendingDelete] = useState<string | null>(null);
     const endpoint = `/api/${kind}`;
 
-    const refresh = useCallback(async () => {
-        try {
-            const payload = await readJson(
-                await fetch(endpoint, { cache: "no-store" })
-            );
-            setItems(payload.entries ?? payload.objects ?? []);
-            setStatus("Ready.");
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : "Refresh failed.");
+    const loadList = useCallback(async (quiet = false) => {
+        if (!quiet) {
+            setBusy(true);
+            setStatus("Refreshing resource…");
+            setStatusType("neutral");
         }
-    }, [endpoint]);
+        try {
+            const response = await fetch(endpoint, { cache: "no-store" });
+            const payload = await parseResponse(response);
+            if (!response.ok) throw new Error(payload.error ?? `Request failed (${response.status})`);
+            const loadedItems = payload.entries ?? payload.objects ?? [];
+            setItems(loadedItems);
+            onSummary(kind, summarize(kind, payload));
+            if (!quiet) {
+                setStatus(`Loaded ${loadedItems.length} ${copy.itemLabel}.`);
+                setStatusType("success");
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Refresh failed.";
+            setStatus(message);
+            setStatusType("error");
+            onSummary(kind, { bytes: 0, count: 0, error: message, status: "error" });
+        } finally {
+            if (!quiet) setBusy(false);
+        }
+    }, [copy.itemLabel, endpoint, kind, onSummary]);
 
     useEffect(() => {
-        void refresh();
-    }, [refresh]);
+        const timeout = window.setTimeout(() => void loadList(true), 0);
+        return () => window.clearTimeout(timeout);
+    }, [loadList, refreshSeed]);
 
-    async function save() {
-        const normalizedKey = key.trim();
+    const filteredItems = useMemo(() => {
+        const query = filter.trim().toLocaleLowerCase();
+        if (!query) return items;
+        return items.filter((item) => item.key.toLocaleLowerCase().includes(query));
+    }, [filter, items]);
+
+    async function request(
+        method: Operation["method"],
+        targetKey: string,
+        body?: { key: string; value: string }
+    ) {
+        const result = await executeStorageRequest(kind, method, targetKey, body);
+        onOperation(result.operation, result.payload);
+        if (result.requestError) throw result.requestError;
+        if (!result.response) throw new Error(result.payload.error ?? "Network request failed.");
+        return { payload: result.payload, response: result.response };
+    }
+
+    function newItem() {
+        setKey("");
+        setValue("");
+        setStatus(`New ${kind === "d1" ? "row" : "object"}. Enter a key and value.`);
+        setStatusType("neutral");
+    }
+
+    async function read(targetKey = key) {
+        const normalizedKey = targetKey.trim();
         if (!normalizedKey) {
-            setStatus("Enter a key first.");
+            setStatus("Enter or select a key first.");
+            setStatusType("error");
             return;
         }
 
         setBusy(true);
-        setStatus("Saving…");
+        setStatus(`Reading “${normalizedKey}”…`);
+        setStatusType("neutral");
         try {
-            const payload = await readJson(
-                await fetch(endpoint, {
-                    body: JSON.stringify({ key: normalizedKey, value }),
-                    headers: { "content-type": "application/json" },
-                    method: "PUT",
-                })
-            );
+            const { payload, response } = await request("GET", normalizedKey);
+            if (!response.ok) throw new Error(payload.error ?? `Request failed (${response.status})`);
             setKey(payload.entry?.key ?? normalizedKey);
-            setStatus(`Saved “${normalizedKey}”.`);
-            await refresh();
+            setValue(payload.entry?.value ?? "");
+            setStatus(`Read “${normalizedKey}” successfully.`);
+            setStatusType("success");
         } catch (error) {
-            setStatus(error instanceof Error ? error.message : "Save failed.");
+            setStatus(error instanceof Error ? error.message : "Read failed.");
+            setStatusType("error");
         } finally {
             setBusy(false);
         }
     }
 
-    async function read() {
+    async function save() {
         const normalizedKey = key.trim();
         if (!normalizedKey) {
-            setStatus("Enter or select a key first.");
+            setStatus("A key is required before saving.");
+            setStatusType("error");
             return;
         }
 
         setBusy(true);
-        setStatus("Reading…");
+        setStatus(`Saving “${normalizedKey}”…`);
+        setStatusType("neutral");
         try {
-            const payload = await readJson(
-                await fetch(`${endpoint}?key=${encodeURIComponent(normalizedKey)}`, {
-                    cache: "no-store",
-                })
+            const { payload, response } = await request(
+                "PUT",
+                normalizedKey,
+                { key: normalizedKey, value }
             );
-            setValue(payload.entry?.value ?? "");
-            setStatus(`Read “${normalizedKey}”.`);
+            if (!response.ok) throw new Error(payload.error ?? `Request failed (${response.status})`);
+            setKey(payload.entry?.key ?? normalizedKey);
+            await loadList(true);
+            setStatus(`Saved “${normalizedKey}” successfully.`);
+            setStatusType("success");
         } catch (error) {
-            setStatus(error instanceof Error ? error.message : "Read failed.");
+            setStatus(error instanceof Error ? error.message : "Save failed.");
+            setStatusType("error");
         } finally {
             setBusy(false);
         }
     }
 
     async function remove() {
-        const normalizedKey = key.trim();
-        if (!normalizedKey) {
-            setStatus("Enter or select a key first.");
-            return;
-        }
-        if (!window.confirm(`Delete “${normalizedKey}” from ${title}?`)) return;
-
+        if (!pendingDelete) return;
+        const targetKey = pendingDelete;
+        setPendingDelete(null);
         setBusy(true);
-        setStatus("Deleting…");
+        setStatus(`Deleting “${targetKey}”…`);
+        setStatusType("neutral");
         try {
-            await readJson(
-                await fetch(`${endpoint}?key=${encodeURIComponent(normalizedKey)}`, {
-                    method: "DELETE",
-                })
-            );
+            const { payload, response } = await request("DELETE", targetKey);
+            if (!response.ok) throw new Error(payload.error ?? `Request failed (${response.status})`);
             setKey("");
             setValue("");
-            setStatus(`Deleted “${normalizedKey}”.`);
-            await refresh();
+            await loadList(true);
+            setStatus(`Deleted “${targetKey}”.`);
+            setStatusType("success");
         } catch (error) {
             setStatus(error instanceof Error ? error.message : "Delete failed.");
+            setStatusType("error");
         } finally {
             setBusy(false);
         }
     }
 
+    async function copyValue() {
+        try {
+            await navigator.clipboard.writeText(value);
+            setStatus("Value copied to the clipboard.");
+            setStatusType("success");
+        } catch {
+            setStatus("Clipboard access was unavailable.");
+            setStatusType("error");
+        }
+    }
+
     return (
-        <section className="storage-panel" aria-labelledby={`${kind}-title`}>
-            <div className="panel-heading">
-                <div>
-                    <p className="eyebrow">Cloudflare</p>
-                    <h2 id={`${kind}-title`}>{title}</h2>
+        <div className="resource-console">
+            <section className="explorer-card" aria-labelledby={`${kind}-explorer-title`}>
+                <div className="section-heading compact">
+                    <div>
+                        <p className="section-kicker">{copy.binding}</p>
+                        <h2 id={`${kind}-explorer-title`}>{copy.shortName} explorer</h2>
+                    </div>
+                    <button className="primary-button small" onClick={newItem} type="button">
+                        New {kind === "d1" ? "row" : "object"}
+                    </button>
                 </div>
-                <span className="binding">{kind === "d1" ? "DB" : "BUCKET"}</span>
-            </div>
-            <p className="description">{description}</p>
 
-            <div className="field">
-                <label htmlFor={`${kind}-key`}>Key</label>
-                <input
-                    id={`${kind}-key`}
-                    maxLength={256}
-                    onChange={(event) => setKey(event.target.value)}
-                    placeholder="example-key"
-                    spellCheck={false}
-                    value={key}
-                />
-            </div>
-            <div className="field">
-                <label htmlFor={`${kind}-value`}>Value</label>
-                <textarea
-                    id={`${kind}-value`}
-                    maxLength={100000}
-                    onChange={(event) => setValue(event.target.value)}
-                    placeholder="Any text value"
-                    rows={7}
-                    value={value}
-                />
-            </div>
+                <div className="search-control">
+                    <label htmlFor={`${kind}-filter`}>Filter keys</label>
+                    <input
+                        id={`${kind}-filter`}
+                        onChange={(event) => setFilter(event.target.value)}
+                        placeholder="Search loaded keys"
+                        type="search"
+                        value={filter}
+                    />
+                </div>
 
-            <div className="actions">
-                <button disabled={busy} onClick={() => void save()} type="button">
-                    Save
-                </button>
-                <button
-                    className="secondary"
-                    disabled={busy}
-                    onClick={() => void read()}
-                    type="button"
-                >
-                    Read
-                </button>
-                <button
-                    className="danger"
-                    disabled={busy}
-                    onClick={() => void remove()}
-                    type="button"
-                >
-                    Delete
-                </button>
-            </div>
+                <div className="list-summary">
+                    <span>{filteredItems.length} of {items.length} loaded</span>
+                    <button
+                        className="text-button"
+                        disabled={busy}
+                        onClick={() => void loadList()}
+                        type="button"
+                    >
+                        Refresh
+                    </button>
+                </div>
 
-            <p className="status" aria-live="polite">{status}</p>
+                {filteredItems.length ? (
+                    <ul className="resource-list">
+                        {filteredItems.map((item) => (
+                            <li key={item.key}>
+                                <button
+                                    className={key === item.key ? "selected" : ""}
+                                    onClick={() => {
+                                        setKey(item.key);
+                                        if (typeof item.value === "string") setValue(item.value);
+                                        void read(item.key);
+                                    }}
+                                    type="button"
+                                >
+                                    <span className="resource-key">{item.key}</span>
+                                    <span className="resource-meta">
+                                        {typeof item.size === "number"
+                                            ? formatBytes(item.size)
+                                            : `${item.value?.length ?? 0} chars`}
+                                        <span aria-hidden="true">·</span>
+                                        {formatDate(item.updatedAt)}
+                                    </span>
+                                    {item.value !== undefined && (
+                                        <span className="value-preview">
+                                            {item.value || "Empty value"}
+                                        </span>
+                                    )}
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                ) : (
+                    <div className="list-empty">
+                        <p>{items.length ? "No matching keys" : `No ${copy.itemLabel} yet`}</p>
+                        <span>{items.length ? "Try a different filter." : "Create one to test the binding."}</span>
+                    </div>
+                )}
+            </section>
 
-            <div className="saved-heading">
-                <h3>Saved keys</h3>
-                <button
-                    className="text-button"
-                    disabled={busy}
-                    onClick={() => void refresh()}
-                    type="button"
-                >
-                    Refresh
-                </button>
-            </div>
-            {items.length ? (
-                <ul className="saved-list">
-                    {items.map((item) => (
-                        <li key={item.key}>
+            <section className="editor-card" aria-labelledby={`${kind}-editor-title`}>
+                <div className="editor-heading">
+                    <div>
+                        <p className="section-kicker">Inspector</p>
+                        <h2 id={`${kind}-editor-title`}>
+                            {key ? "Edit stored value" : `New ${kind === "d1" ? "row" : "object"}`}
+                        </h2>
+                    </div>
+                    <span className="binding-chip">{copy.binding}</span>
+                </div>
+
+                <div className={`editor-status ${statusType}`} role="status" aria-live="polite">
+                    <span aria-hidden="true" />
+                    {status}
+                </div>
+
+                <form onSubmit={(event) => {
+                    event.preventDefault();
+                    void save();
+                }}>
+                    <div className="field">
+                        <div className="field-label">
+                            <label htmlFor={`${kind}-key`}>Key</label>
+                            <span>{key.length}/256</span>
+                        </div>
+                        <input
+                            autoComplete="off"
+                            id={`${kind}-key`}
+                            maxLength={256}
+                            onChange={(event) => setKey(event.target.value)}
+                            placeholder={kind === "d1" ? "settings:theme" : "config/example.txt"}
+                            spellCheck={false}
+                            value={key}
+                        />
+                    </div>
+                    <div className="field value-field">
+                        <div className="field-label">
+                            <label htmlFor={`${kind}-value`}>Text value</label>
+                            <span>{value.length.toLocaleString()}/100,000</span>
+                        </div>
+                        <textarea
+                            id={`${kind}-value`}
+                            maxLength={100000}
+                            onChange={(event) => setValue(event.target.value)}
+                            placeholder="Enter the value to store…"
+                            rows={14}
+                            value={value}
+                        />
+                    </div>
+
+                    <div className="editor-actions">
+                        <button className="primary-button" disabled={busy} type="submit">
+                            {busy ? "Working…" : kind === "d1" ? "Upsert row" : "Put object"}
+                        </button>
+                        <button
+                            className="secondary-button"
+                            disabled={busy || !key.trim()}
+                            onClick={() => void read()}
+                            type="button"
+                        >
+                            Read latest
+                        </button>
+                        <button
+                            className="secondary-button"
+                            disabled={!value}
+                            onClick={() => void copyValue()}
+                            type="button"
+                        >
+                            Copy value
+                        </button>
+                        <button
+                            className="danger-button"
+                            disabled={busy || !key.trim()}
+                            onClick={() => setPendingDelete(key.trim())}
+                            type="button"
+                        >
+                            Delete
+                        </button>
+                    </div>
+                </form>
+            </section>
+
+            {pendingDelete && (
+                <div className="modal-backdrop" role="presentation">
+                    <section
+                        aria-describedby="delete-description"
+                        aria-labelledby="delete-title"
+                        aria-modal="true"
+                        className="confirm-modal"
+                        role="dialog"
+                    >
+                        <div className="danger-icon" aria-hidden="true">!</div>
+                        <h2 id="delete-title">Delete stored value?</h2>
+                        <p id="delete-description">
+                            <code>{pendingDelete}</code> will be permanently removed from {copy.name}.
+                        </p>
+                        <div className="modal-actions">
                             <button
-                                onClick={() => {
-                                    setKey(item.key);
-                                    if (typeof item.value === "string") {
-                                        setValue(item.value);
-                                    }
-                                    setStatus(`Selected “${item.key}”.`);
-                                }}
+                                className="secondary-button"
+                                onClick={() => setPendingDelete(null)}
                                 type="button"
                             >
-                                <span>{item.key}</span>
-                                <small>
-                                    {typeof item.size === "number"
-                                        ? `${item.size.toLocaleString()} bytes · `
-                                        : ""}
-                                    {formatDate(item.updatedAt)}
-                                </small>
+                                Cancel
                             </button>
-                        </li>
-                    ))}
-                </ul>
-            ) : (
-                <p className="empty">No keys saved yet.</p>
+                            <button className="destructive-button" onClick={() => void remove()} type="button">
+                                Delete permanently
+                            </button>
+                        </div>
+                    </section>
+                </div>
             )}
-        </section>
+        </div>
     );
 }
 
 export default function Home() {
-    return (
-        <main>
-            <header className="page-header">
-                <div>
-                    <p className="eyebrow">Starter</p>
-                    <h1>Storage workbench</h1>
-                    <p>
-                        Two deliberately small read/write examples using native
-                        Cloudflare storage bindings.
-                    </p>
-                </div>
-                <span className="private-label">Private Site</span>
-            </header>
+    const [activeView, setActiveView] = useState<View>("overview");
+    const [theme, setTheme] = useState<Theme>("system");
+    const [refreshSeed, setRefreshSeed] = useState(0);
+    const [operations, setOperations] = useState<Operation[]>([]);
+    const [lastResponse, setLastResponse] = useState<ResponseSnapshot | null>(null);
+    const [summaries, setSummaries] = useState<Record<StoreKind, ResourceSummary>>({
+        d1: { bytes: 0, count: 0, status: "loading" },
+        r2: { bytes: 0, count: 0, status: "loading" },
+    });
 
-            <div className="panel-grid">
-                <StoragePanel
-                    description="Structured key/value rows in a relational SQLite database. Saving an existing key updates it."
-                    kind="d1"
-                    title="D1"
-                />
-                <StoragePanel
-                    description="Text objects stored by key in object storage. Values are retrieved directly from each object."
-                    kind="r2"
-                    title="R2"
-                />
-            </div>
-        </main>
+    useEffect(() => {
+        const timeout = window.setTimeout(() => {
+            const storedTheme = window.localStorage.getItem("starter-control-plane:theme:v1");
+            if (storedTheme === "system" || storedTheme === "light" || storedTheme === "dark") {
+                setTheme(storedTheme);
+            }
+        }, 0);
+        return () => window.clearTimeout(timeout);
+    }, []);
+
+    useEffect(() => {
+        if (theme === "system") {
+            delete document.documentElement.dataset.theme;
+        } else {
+            document.documentElement.dataset.theme = theme;
+        }
+        window.localStorage.setItem("starter-control-plane:theme:v1", theme);
+    }, [theme]);
+
+    const updateSummary = useCallback((kind: StoreKind, summary: ResourceSummary) => {
+        setSummaries((current) => ({ ...current, [kind]: summary }));
+    }, []);
+
+    const loadOverview = useCallback(async () => {
+        await Promise.all(((["d1", "r2"] as StoreKind[]).map(async (kind) => {
+            updateSummary(kind, { bytes: 0, count: 0, status: "loading" });
+            try {
+                const response = await fetch(`/api/${kind}`, { cache: "no-store" });
+                const payload = await parseResponse(response);
+                if (!response.ok) throw new Error(payload.error ?? `Request failed (${response.status})`);
+                updateSummary(kind, summarize(kind, payload));
+            } catch (error) {
+                updateSummary(kind, {
+                    bytes: 0,
+                    count: 0,
+                    error: error instanceof Error ? error.message : "Connection failed.",
+                    status: "error",
+                });
+            }
+        })));
+    }, [updateSummary]);
+
+    useEffect(() => {
+        void loadOverview();
+    }, [loadOverview, refreshSeed]);
+
+    const recordOperation = useCallback((operation: Operation, payload: unknown) => {
+        setOperations((current) => [operation, ...current].slice(0, 30));
+        setLastResponse({ ...operation, payload });
+    }, []);
+
+    const title = activeView === "overview"
+        ? "Overview"
+        : `${resourceCopy[activeView].shortName} explorer`;
+
+    return (
+        <div className="app-shell">
+            <aside className="sidebar">
+                <div className="brand">
+                    <div className="brand-mark">S</div>
+                    <div>
+                        <strong>starter</strong>
+                        <span>Control plane</span>
+                    </div>
+                </div>
+
+                <nav aria-label="Control plane navigation">
+                    <p>Workspace</p>
+                    <button
+                        aria-current={activeView === "overview" ? "page" : undefined}
+                        className={activeView === "overview" ? "active" : ""}
+                        onClick={() => setActiveView("overview")}
+                        type="button"
+                    >
+                        <span className="nav-icon" aria-hidden="true">⌂</span>
+                        Overview
+                    </button>
+                    <p>Resources</p>
+                    <button
+                        aria-current={activeView === "d1" ? "page" : undefined}
+                        className={activeView === "d1" ? "active" : ""}
+                        onClick={() => setActiveView("d1")}
+                        type="button"
+                    >
+                        <span className="nav-icon resource-nav d1" aria-hidden="true">D1</span>
+                        Database
+                        <StatusDot status={summaries.d1.status} />
+                    </button>
+                    <button
+                        aria-current={activeView === "r2" ? "page" : undefined}
+                        className={activeView === "r2" ? "active" : ""}
+                        onClick={() => setActiveView("r2")}
+                        type="button"
+                    >
+                        <span className="nav-icon resource-nav r2" aria-hidden="true">R2</span>
+                        Object storage
+                        <StatusDot status={summaries.r2.status} />
+                    </button>
+                </nav>
+
+                <div className="sidebar-footer">
+                    <div>
+                        <span className="environment-dot" aria-hidden="true" />
+                        <span>Production</span>
+                    </div>
+                    <small>Private · owner only</small>
+                </div>
+            </aside>
+
+            <main className="main-content">
+                <header className="topbar">
+                    <div>
+                        <p>Storage control plane</p>
+                        <h1>{title}</h1>
+                    </div>
+                    <div className="topbar-actions">
+                        <label className="theme-control">
+                            <span>Theme</span>
+                            <select value={theme} onChange={(event) => setTheme(event.target.value as Theme)}>
+                                <option value="system">System</option>
+                                <option value="light">Light</option>
+                                <option value="dark">Dark</option>
+                            </select>
+                        </label>
+                        <button
+                            className="secondary-button refresh-all"
+                            onClick={() => setRefreshSeed((value) => value + 1)}
+                            type="button"
+                        >
+                            Refresh all
+                        </button>
+                    </div>
+                </header>
+
+                <div className="content-area">
+                    {activeView === "overview" ? (
+                        <Overview
+                            onNavigate={setActiveView}
+                            operations={operations}
+                            summaries={summaries}
+                        />
+                    ) : (
+                        <ResourceConsole
+                            key={activeView}
+                            kind={activeView}
+                            onOperation={recordOperation}
+                            onSummary={updateSummary}
+                            refreshSeed={refreshSeed}
+                        />
+                    )}
+
+                    <details className="response-inspector">
+                        <summary>
+                            <span>
+                                <strong>Last response</strong>
+                                {lastResponse
+                                    ? `${resourceCopy[lastResponse.resource].shortName} ${lastResponse.method} · ${lastResponse.status || "Network error"} · ${lastResponse.duration} ms`
+                                    : "No operation selected"}
+                            </span>
+                            <span aria-hidden="true">⌄</span>
+                        </summary>
+                        <pre>{lastResponse
+                            ? JSON.stringify(lastResponse.payload, null, 2)
+                            : "Run a read, write, or delete operation to inspect its response."}</pre>
+                    </details>
+                </div>
+            </main>
+        </div>
     );
 }

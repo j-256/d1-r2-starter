@@ -10,5 +10,5 @@ export function getDb() {
     );
   }
 
-  return drizzle(binding, { schema });
+  return drizzle(binding as never, { schema });
 }
