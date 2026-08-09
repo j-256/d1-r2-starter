@@ -35,7 +35,7 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
-          "default": "CURRENT_TIMESTAMP"
+          "default": "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
         }
       },
       "indexes": {},

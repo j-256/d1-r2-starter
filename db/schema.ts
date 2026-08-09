@@ -7,5 +7,7 @@ export const d1Values = sqliteTable("d1_values", {
     contentType: text("content_type")
         .notNull()
         .default("text/plain; charset=utf-8"),
-    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+        .notNull()
+        .default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`),
 });

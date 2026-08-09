@@ -5,5 +5,5 @@ VALUES (
     'demo:migration',
     'Inserted by migration 0001 after content_type was added.',
     'text/plain; charset=utf-8',
-    CURRENT_TIMESTAMP
+    '2026-01-01T00:00:00.000Z'
 );
