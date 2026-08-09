@@ -32,9 +32,19 @@ test("D1 migrations evolve the schema and add the minimal demo row", async () =>
         "'text/plain; charset=utf-8'"
     );
 
+    const updatedAtColumn = columns.find((column) => (
+        isRecord(column) && column["name"] === "updated_at"
+    ));
+    assert.ok(updatedAtColumn);
+    assert.equal(
+        updatedAtColumn["dflt_value"],
+        "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+    );
+
     const row = database
         .prepare(
-            `SELECT key, value, content_type AS contentType
+            `SELECT key, value, content_type AS contentType,
+                    updated_at AS updatedAt
              FROM d1_values
              WHERE key = ?1`
         )
@@ -46,4 +56,5 @@ test("D1 migrations evolve the schema and add the minimal demo row", async () =>
         "Inserted by migration 0001 after content_type was added."
     );
     assert.equal(row["contentType"], "text/plain; charset=utf-8");
+    assert.equal(row["updatedAt"], "2026-01-01T00:00:00.000Z");
 });
