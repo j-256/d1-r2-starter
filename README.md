@@ -44,6 +44,22 @@ HTTP route -> TextStore -> D1 or R2 adapter -> runtime binding
 - `.openai/hosting.json` declares the logical D1 and R2 binding names managed by
   Sites.
 
+## D1 migrations
+
+The checked-in migration history intentionally includes one minimal evolution
+example:
+
+- `0000_complex_thena.sql` creates `d1_values`.
+- `0001_add-content-type-demo.sql` adds a non-null `content_type` column with a
+  backwards-compatible default, then inserts one idempotent `demo:migration`
+  row so the applied migration is visible in the D1 explorer.
+
+Treat committed migration files as immutable history. Change `db/schema.ts`,
+run `npm run db:generate -- --name <descriptive-name>`, inspect the generated
+SQL, and add explicit data backfills only when the schema change requires them.
+The production build packages the full migration history under
+`dist/.openai/drizzle/` for Sites to apply before the new Worker version runs.
+
 The compiler enables strict mode plus unchecked-index, exact-optional-property,
 unused-code, implicit-return, fallthrough, and casing checks. Library declaration
 files remain skipped because Vinext, Next.js, and Cloudflare own those external

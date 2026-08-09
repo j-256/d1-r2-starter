@@ -34,6 +34,7 @@ const createTableSql = `
     CREATE TABLE IF NOT EXISTS d1_values (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
+        content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
 `;
