@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 import {
     copyGeneratedPath,
     emitOpenai,
+    OPENAI_PACKAGE_SCRIPT_ALLOWLIST,
+    OPENAI_SCRIPT_ALLOWLIST,
     scanForResidue,
     scanOpenaiResidue,
     RESIDUE_PATTERN,
@@ -129,6 +131,53 @@ test("emitOpenai removes the factory project_id from the reusable manifest", () 
         );
         assert.deepEqual(emitted, { d1: "DB", r2: "BUCKET" });
         assert.equal(factory.project_id, "factory-project");
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("emitOpenai allowlists runtime scripts and package commands", () => {
+    const root = tempTree();
+    try {
+        const source = join(root, "source");
+        const output = join(root, "output");
+        mkdirSync(join(source, ".openai"), { recursive: true });
+        mkdirSync(join(source, "scripts"));
+        writeFileSync(
+            join(source, "scripts", "sites-env.sh"),
+            "#!/bin/bash\n"
+        );
+        writeFileSync(
+            join(source, "scripts", "future-factory-tool.mjs"),
+            "export {};\n"
+        );
+        writeFileSync(
+            join(source, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "vinext build",
+                    "template:future": "node scripts/future-factory-tool.mjs",
+                },
+            })
+        );
+        writeFileSync(join(source, ".openai", "hosting.json"), "{}\n");
+
+        emitOpenai(source, output);
+
+        assert.equal(
+            existsSync(join(output, "scripts", "sites-env.sh")),
+            true
+        );
+        assert.equal(
+            existsSync(join(output, "scripts", "future-factory-tool.mjs")),
+            false
+        );
+        const emittedPackage = JSON.parse(
+            readFileSync(join(output, "package.json"), "utf8")
+        );
+        assert.deepEqual(emittedPackage.scripts, { build: "vinext build" });
+        assert.equal(OPENAI_SCRIPT_ALLOWLIST.includes("sites-env.sh"), true);
+        assert.equal(OPENAI_PACKAGE_SCRIPT_ALLOWLIST.includes("build"), true);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -274,7 +323,7 @@ test("scanOpenaiResidue flags a leaked factory-only docs/PUBLISH.md", () => {
     }
 });
 
-test("scanOpenaiResidue flags dangling generate scripts in package.json", () => {
+test("scanOpenaiResidue flags an unexpected package command", () => {
     const root = tempTree();
     try {
         writeCleanOpenaiTree(root);
@@ -283,24 +332,37 @@ test("scanOpenaiResidue flags dangling generate scripts in package.json", () => 
             JSON.stringify({
                 scripts: {
                     build: "vinext build",
-                    generate: "node scripts/generate.mjs",
+                    "template:backups": "node scripts/template-backups.mjs",
                 },
             })
         );
         const violations = scanOpenaiResidue(root);
-        assert.equal(violations.some((v) => v.includes("generate")), true);
+        assert.equal(
+            violations.some((violation) =>
+                violation.includes("template:backups")
+            ),
+            true
+        );
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
 });
 
-test("scanOpenaiResidue flags a leaked generator script under scripts/", () => {
+test("scanOpenaiResidue flags an unexpected script file", () => {
     const root = tempTree();
     try {
         writeCleanOpenaiTree(root);
-        writeFileSync(join(root, "scripts", "generate.mjs"), "// leaked\n");
+        writeFileSync(
+            join(root, "scripts", "template-backups.mjs"),
+            "export {};\n"
+        );
         const violations = scanOpenaiResidue(root);
-        assert.equal(violations.some((v) => v.includes("generate.mjs")), true);
+        assert.equal(
+            violations.some((violation) =>
+                violation.includes("template-backups.mjs")
+            ),
+            true
+        );
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

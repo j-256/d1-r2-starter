@@ -39,16 +39,13 @@ export const OPENAI_DROP = [
     ".DS_Store",
 ];
 
-// scripts/ is dropped selectively: the generator files must not ship, but the
-// openai Sites scripts must. Handled in emitOpenai, not here
-export const OPENAI_DROP_SCRIPTS = [
-    "generate.mjs",
-    "generate-lib.mjs",
-    "generate.test.mjs",
-    "publish-template.mjs",
-    "publish-template-lib.mjs",
-    "publish-template.test.mjs",
-];
+// Only these runtime scripts belong in the emitted OpenAI template
+export const OPENAI_SCRIPT_ALLOWLIST = Object.freeze([
+    "build-verified.sh",
+    "install-ci.sh",
+    "sites-env.sh",
+    "validate-artifact.sh",
+]);
 
 // Factory-only files that live at non-dropped root paths and so survive the
 // copy-root, but must not ship in the openai template. Repo-relative POSIX
@@ -57,15 +54,19 @@ export const OPENAI_DROP_SCRIPTS = [
 // and references the sibling wrangler variant, so it is not template content
 export const OPENAI_DROP_FILES = ["docs/PUBLISH.md"];
 
-// package.json script keys that drive the factory only. They reference the
-// dropped generator files, so leaving them in the emitted openai package.json
-// yields commands that fail with module-not-found. db:generate is unrelated
-// (drizzle) and is intentionally NOT listed
-export const OPENAI_DROP_SCRIPT_KEYS = [
-    "generate",
-    "test:generate",
-    "template:publish",
-];
+// Only these package commands belong in the emitted OpenAI template
+export const OPENAI_PACKAGE_SCRIPT_ALLOWLIST = Object.freeze([
+    "install:ci",
+    "dev",
+    "build",
+    "start",
+    "test",
+    "test:build",
+    "validate:artifact",
+    "lint",
+    "typecheck",
+    "db:generate",
+]);
 
 // Forbidden tokens for the WRANGLER tree (contents and paths), case-insensitive
 export const RESIDUE_PATTERN = /oai-|\.openai|chatgpt|siwc|vinext|codex-preview/i;
@@ -158,10 +159,14 @@ export function emitOpenai(repoRoot, outDir) {
         copyGeneratedPath(from, to);
     }
 
-    // Drop the generator files from the copied scripts/ dir
+    // Keep only runtime scripts in the copied scripts/ directory
     const scriptsDir = join(outDir, "scripts");
-    for (const name of OPENAI_DROP_SCRIPTS) {
-        rmSync(join(scriptsDir, name), { force: true });
+    for (const entry of readdirSync(scriptsDir, { withFileTypes: true })) {
+        if (OPENAI_SCRIPT_ALLOWLIST.includes(entry.name)) continue;
+        rmSync(join(scriptsDir, entry.name), {
+            force: true,
+            recursive: true,
+        });
     }
 
     // Drop factory-only files that survive the copy-root at non-dropped paths,
@@ -177,12 +182,15 @@ export function emitOpenai(repoRoot, outDir) {
         }
     }
 
-    // Strip factory-only script keys from the emitted package.json so no
-    // command references a dropped generator file
+    // Keep only runtime commands in the emitted package.json
     const packagePath = join(outDir, "package.json");
     const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
     if (pkg.scripts) {
-        for (const key of OPENAI_DROP_SCRIPT_KEYS) delete pkg.scripts[key];
+        pkg.scripts = Object.fromEntries(
+            OPENAI_PACKAGE_SCRIPT_ALLOWLIST
+                .filter((key) => key in pkg.scripts)
+                .map((key) => [key, pkg.scripts[key]])
+        );
     }
     writeFileSync(packagePath, JSON.stringify(pkg, null, 2) + "\n");
 
@@ -208,9 +216,14 @@ export function scanOpenaiResidue(root) {
         }
     }
 
-    for (const name of OPENAI_DROP_SCRIPTS) {
-        if (existsSync(join(root, "scripts", name))) {
-            violations.push(`scripts/${name}: generator file must not ship`);
+    const scriptsDirectory = join(root, "scripts");
+    if (existsSync(scriptsDirectory)) {
+        for (const entry of readdirSync(scriptsDirectory)) {
+            if (!OPENAI_SCRIPT_ALLOWLIST.includes(entry)) {
+                violations.push(
+                    `scripts/${entry}: unexpected template script`
+                );
+            }
         }
     }
 
@@ -218,9 +231,11 @@ export function scanOpenaiResidue(root) {
     if (existsSync(packagePath)) {
         const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
         const scripts = pkg.scripts ?? {};
-        for (const key of OPENAI_DROP_SCRIPT_KEYS) {
-            if (key in scripts) {
-                violations.push(`package.json: factory-only script "${key}"`);
+        for (const key of Object.keys(scripts)) {
+            if (!OPENAI_PACKAGE_SCRIPT_ALLOWLIST.includes(key)) {
+                violations.push(
+                    `package.json: unexpected template script "${key}"`
+                );
             }
         }
     }
