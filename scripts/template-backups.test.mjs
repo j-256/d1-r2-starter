@@ -28,10 +28,6 @@ function fakeDependencies(options = {}) {
     const operations = [];
     return {
         dependencies: {
-            async confirmAcceptance({ repository }) {
-                operations.push(`confirmAcceptance:${repository}`);
-                return options.accepted ?? true;
-            },
             listRetainedBackups(repository) {
                 operations.push(`listRetainedBackups:${repository}`);
                 return options.backupsByRepository?.[repository] ?? [];
@@ -147,7 +143,7 @@ test("parseTemplateBackupArguments supports listing and selected cleanup", () =>
     );
 });
 
-test("templateBackupUsage documents listing and accepted cleanup", () => {
+test("templateBackupUsage documents listing and explicit cleanup", () => {
     const usage = templateBackupUsage();
     assert.match(usage, /npm run template:backups/);
     assert.match(usage, /trash <openai\|wrangler>/);
@@ -177,11 +173,10 @@ test("manageTemplateBackups lists retained mirrors without moving them", async (
     );
 });
 
-test("manageTemplateBackups moves only an accepted variant to Trash", async () => {
+test("manageTemplateBackups moves only the explicit variant to Trash", async () => {
     const openaiBackup = "/state/openai.git";
     const wranglerBackup = "/state/wrangler.git";
     const fake = fakeDependencies({
-        accepted: true,
         backupsByRepository: {
             [OPENAI_REPOSITORY]: [openaiBackup],
             [WRANGLER_REPOSITORY]: [wranglerBackup],
@@ -194,10 +189,6 @@ test("manageTemplateBackups moves only an accepted variant to Trash", async () =
 
     assert.deepEqual(result, []);
     assert.equal(
-        fake.operations.includes(`confirmAcceptance:${OPENAI_REPOSITORY}`),
-        true
-    );
-    assert.equal(
         fake.operations.includes(`moveToTrash:${openaiBackup}`),
         true
     );
@@ -205,28 +196,10 @@ test("manageTemplateBackups moves only an accepted variant to Trash", async () =
         fake.operations.includes(`listRetainedBackups:${WRANGLER_REPOSITORY}`),
         false
     );
-});
-
-test("manageTemplateBackups retains mirrors when acceptance is declined", async () => {
-    const backup = "/state/openai.git";
-    const fake = fakeDependencies({
-        accepted: false,
-        backupsByRepository: {
-            [OPENAI_REPOSITORY]: [backup],
-        },
-    });
-    const result = await manageTemplateBackups(
-        { action: "trash", help: false, variant: "openai" },
-        fake.dependencies
-    );
-
-    assert.equal(result[0].path, backup);
     assert.equal(
-        fake.operations.includes("log:Nothing moved to Trash."),
+        fake.operations.includes(
+            "log:openai: retained mirrors moved to Trash."
+        ),
         true
-    );
-    assert.equal(
-        fake.operations.some((operation) => operation.startsWith("moveToTrash:")),
-        false
     );
 });

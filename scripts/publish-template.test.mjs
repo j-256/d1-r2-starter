@@ -13,10 +13,12 @@ import { join } from "node:path";
 import test from "node:test";
 import {
     createSystemDependencies,
+    isAffirmativeResponse,
     mergeChangedPaths,
     parseHttpStatus,
     parsePublishArguments,
     publishTemplates,
+    publicationConfirmationQuestion,
     publishUsage,
     resolveCommitMessage,
     syncGeneratedTree,
@@ -117,10 +119,10 @@ function fakeDependencies(options = {}) {
                     ?? options.requestedMessage
                     ?? UPDATE_MESSAGE;
             },
-            async confirmBackupAcceptance({ repository }) {
-                operations.push(`confirmBackupAcceptance:${repository}`);
-                return options.acceptedBackupByRepository?.[repository]
-                    ?? options.acceptedBackup
+            async confirmBackupCleanup({ repository }) {
+                operations.push(`confirmBackupCleanup:${repository}`);
+                return options.cleanupBackupByRepository?.[repository]
+                    ?? options.cleanupBackup
                     ?? false;
             },
             async listRetainedBackups(repository) {
@@ -227,8 +229,45 @@ test("publishUsage documents history modes and persistent backups", () => {
     assert.match(usage, /both is an alias/);
     assert.match(usage, /--history append\|fresh/);
     assert.match(usage, /root commits default to Initial commit/);
-    assert.match(usage, /Disable prompts and authorize publication/);
+    assert.match(usage, /Authorize publication without prompts/);
     assert.match(usage, /TEMPLATE_PUBLISH_BACKUP_DIR/);
+});
+
+test("isAffirmativeResponse accepts short yes answers", () => {
+    assert.equal(isAffirmativeResponse("y"), true);
+    assert.equal(isAffirmativeResponse(" YES "), true);
+    assert.equal(isAffirmativeResponse(""), false);
+    assert.equal(isAffirmativeResponse("no"), false);
+    assert.equal(
+        isAffirmativeResponse(`${OPENAI_REPOSITORY} fresh`),
+        false
+    );
+});
+
+test("publicationConfirmationQuestion names each target and action", () => {
+    assert.equal(
+        publicationConfirmationQuestion({
+            action: "create",
+            repository: OPENAI_REPOSITORY,
+        }),
+        `Create and publish ${OPENAI_REPOSITORY}? [y/N] `
+    );
+    assert.equal(
+        publicationConfirmationQuestion({
+            action: "update",
+            history: "append",
+            repository: OPENAI_REPOSITORY,
+        }),
+        `Append and publish a commit to ${OPENAI_REPOSITORY}? [y/N] `
+    );
+    assert.equal(
+        publicationConfirmationQuestion({
+            action: "replace",
+            history: "fresh",
+            repository: OPENAI_REPOSITORY,
+        }),
+        `Replace main in ${OPENAI_REPOSITORY} with a fresh root commit and force-push? [y/N] `
+    );
 });
 
 test("resolveCommitMessage defaults for root commits only", () => {
@@ -722,7 +761,7 @@ test("publishTemplates replaces existing history only after creating a mirror", 
     );
     assert.equal(
         fake.operations.includes(
-            "log:After accepting the replacement, run npm run template:backups -- trash <variant>."
+            "log:After inspecting the replacement, clean up with npm run template:backups -- trash <variant>."
         ),
         true
     );
@@ -903,9 +942,9 @@ test("explicit fresh mode ignores retained mirrors for unselected variants", asy
     assert.equal(result.status, "replaced");
 });
 
-test("interactive fresh publication trashes an accepted verified mirror", async () => {
+test("interactive fresh publication trashes a verified mirror on request", async () => {
     const fake = fakeDependencies({
-        acceptedBackup: true,
+        cleanupBackup: true,
         exists: true,
     });
     const [result] = await publishTemplates(
@@ -924,14 +963,14 @@ test("interactive fresh publication trashes an accepted verified mirror", async 
     const verify = fake.operations.indexOf(
         `verifyPublished:${OPENAI_REPOSITORY}`
     );
-    const accept = fake.operations.indexOf(
-        `confirmBackupAcceptance:${OPENAI_REPOSITORY}`
+    const requestCleanup = fake.operations.indexOf(
+        `confirmBackupCleanup:${OPENAI_REPOSITORY}`
     );
     const trash = fake.operations.indexOf(
         `moveBackupsToTrash:backup:${OPENAI_REPOSITORY}`
     );
-    assert.equal(verify < accept, true);
-    assert.equal(accept < trash, true);
+    assert.equal(verify < requestCleanup, true);
+    assert.equal(requestCleanup < trash, true);
     assert.equal(
         fake.operations.some((operation) =>
             operation.includes("replaced (backup moved to Trash)")
@@ -942,7 +981,7 @@ test("interactive fresh publication trashes an accepted verified mirror", async 
 
 test("interactive fresh publication retains a mirror when Trash fails", async () => {
     const fake = fakeDependencies({
-        acceptedBackup: true,
+        cleanupBackup: true,
         exists: true,
         trashError: new Error("trash unavailable"),
     });
@@ -984,7 +1023,7 @@ test("non-interactive fresh publication retains its verified mirror", async () =
     assert.equal(result.backupTrashed, false);
     assert.equal(
         fake.operations.includes(
-            `confirmBackupAcceptance:${OPENAI_REPOSITORY}`
+            `confirmBackupCleanup:${OPENAI_REPOSITORY}`
         ),
         false
     );

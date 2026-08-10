@@ -15,7 +15,6 @@ import {
     availableBackupPath,
     listRetainedMirrorBackups,
     moveMirrorBackupsToTrash,
-    repositoryAcceptancePhrase,
     TEMPLATE_BACKUP_COMMANDS,
     templateBackupRoot,
 } from "./template-backups-lib.mjs";
@@ -26,6 +25,7 @@ export { TEMPLATE_VARIANTS };
 const DEFAULT_BRANCH = "main";
 const FACTORY_REMOTE = "origin";
 const ALL_VARIANTS = "all";
+const AFFIRMATIVE_RESPONSES = new Set(["y", "yes"]);
 const BOTH_VARIANTS_ALIAS = "both";
 const HISTORY_MODES = Object.freeze({
     append: "append",
@@ -52,6 +52,24 @@ const PUBLISHED_STATUSES = new Set([
     PUBLICATION_STATUSES.replaced,
     PUBLICATION_STATUSES.updated,
 ]);
+
+export function isAffirmativeResponse(response) {
+    return AFFIRMATIVE_RESPONSES.has(response.trim().toLowerCase());
+}
+
+export function publicationConfirmationQuestion({
+    action,
+    history,
+    repository,
+}) {
+    if (history === HISTORY_MODES.fresh) {
+        return `Replace main in ${repository} with a fresh root commit and force-push? [y/N] `;
+    }
+    if (action === PUBLICATION_ACTIONS.create) {
+        return `Create and publish ${repository}? [y/N] `;
+    }
+    return `Append and publish a commit to ${repository}? [y/N] `;
+}
 
 function commandFailure(command, args, result) {
     const details = [result.stdout, result.stderr]
@@ -187,7 +205,7 @@ export function publishUsage() {
         "  openai|wrangler      Limit publication to one template",
         "  --history <mode>     Append a commit or replace main with a fresh root",
         "  --message <message>  Override the commit message; root commits default to Initial commit",
-        "  --yes                Disable prompts and authorize publication; existing repos require history",
+        "  --yes                Authorize publication without prompts; existing repos require history",
         "  --help               Show this help",
         "",
         "Environment:",
@@ -314,7 +332,7 @@ function logSummary(dependencies, results) {
     if (results.some(({ backup }) => backup)) {
         dependencies.log("");
         dependencies.log(
-            `After accepting the replacement, run ${TEMPLATE_BACKUP_COMMANDS.trash}.`
+            `After inspecting the replacement, clean up with ${TEMPLATE_BACKUP_COMMANDS.trash}.`
         );
     }
     dependencies.log("");
@@ -574,10 +592,11 @@ export async function publishTemplates(options, dependencies) {
                 dependencies.log(
                     `Verified replacement: https://github.com/${plan.config.repository}/commit/${commit}`
                 );
-                const accepted = await dependencies.confirmBackupAcceptance({
-                    repository: plan.config.repository,
-                });
-                if (accepted) {
+                const cleanupRequested =
+                    await dependencies.confirmBackupCleanup({
+                        repository: plan.config.repository,
+                    });
+                if (cleanupRequested) {
                     try {
                         await dependencies.moveBackupsToTrash([backup]);
                         dependencies.log("Mirror backup moved to Trash.");
@@ -784,21 +803,19 @@ export function createSystemDependencies(repoRoot) {
                 );
             }
 
-            const expected = history === HISTORY_MODES.fresh
-                ? `${repository} fresh`
-                : repository;
-            const description = history === HISTORY_MODES.fresh
-                ? "replace main with a fresh root commit and force-push"
-                : `${action} and publish`;
             const readline = createInterface({
                 input: process.stdin,
                 output: process.stdout,
             });
             try {
                 const answer = await readline.question(
-                    `Type ${expected} to ${description}: `
+                    publicationConfirmationQuestion({
+                        action,
+                        history,
+                        repository,
+                    })
                 );
-                return answer.trim() === expected;
+                return isAffirmativeResponse(answer);
             } finally {
                 readline.close();
             }
@@ -856,22 +873,21 @@ export function createSystemDependencies(repoRoot) {
             }
         },
 
-        async confirmBackupAcceptance({ repository }) {
+        async confirmBackupCleanup({ repository }) {
             if (!process.stdin.isTTY || !process.stdout.isTTY) {
                 throw new Error(
-                    `Accepting the replacement for ${repository} requires a terminal.`
+                    `Choosing recovery-mirror cleanup for ${repository} requires a terminal.`
                 );
             }
-            const expected = repositoryAcceptancePhrase(repository);
             const readline = createInterface({
                 input: process.stdin,
                 output: process.stdout,
             });
             try {
                 const answer = await readline.question(
-                    `After inspecting the replacement, type ${expected} to move its mirror to Trash, or press Enter to retain it: `
+                    `Move the recovery mirror for ${repository} to Trash? [y/N] `
                 );
-                return answer.trim() === expected;
+                return isAffirmativeResponse(answer);
             } finally {
                 readline.close();
             }

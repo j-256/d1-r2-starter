@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { TEMPLATE_VARIANTS } from "./template-variants.mjs";
 
 const BACKUP_ACTIONS = Object.freeze({
@@ -29,10 +28,6 @@ function commandFailure(command, args, result) {
 
 function repositorySlug(repository) {
     return repository.replace(/[^A-Za-z0-9._-]+/g, "--");
-}
-
-export function repositoryAcceptancePhrase(repository) {
-    return `${repository} accepted`;
 }
 
 export function templateBackupRoot({
@@ -152,7 +147,7 @@ export function templateBackupUsage() {
         "",
         "Commands:",
         "  list                 List retained recovery mirrors (default)",
-        "  trash <variant>      Move accepted mirrors for one template to Trash",
+        "  trash <variant>      Move retained mirrors for one template to Trash",
         "  --help               Show this help",
         "",
         "Environment:",
@@ -190,44 +185,18 @@ export async function manageTemplateBackups(options, dependencies) {
     if (options.action === BACKUP_ACTIONS.list) {
         dependencies.log("");
         dependencies.log(
-            `After accepting a rewritten repository, run ${TEMPLATE_BACKUP_COMMANDS.trash}.`
+            `When a recovery mirror is no longer needed, run ${TEMPLATE_BACKUP_COMMANDS.trash}.`
         );
         return records;
     }
 
-    const repository = TEMPLATE_VARIANTS[options.variant].repository;
-    const confirmed = await dependencies.confirmAcceptance({ repository });
-    if (!confirmed) {
-        dependencies.log("Nothing moved to Trash.");
-        return records;
-    }
     await dependencies.moveToTrash(records.map(({ path }) => path));
-    dependencies.log(`${options.variant}: accepted mirrors moved to Trash.`);
+    dependencies.log(`${options.variant}: retained mirrors moved to Trash.`);
     return [];
 }
 
 export function createTemplateBackupDependencies(repoRoot) {
     return {
-        confirmAcceptance: async ({ repository }) => {
-            if (!process.stdin.isTTY || !process.stdout.isTTY) {
-                throw new Error(
-                    `Accepting the replacement for ${repository} requires a terminal.`
-                );
-            }
-            const expected = repositoryAcceptancePhrase(repository);
-            const readline = createInterface({
-                input: process.stdin,
-                output: process.stdout,
-            });
-            try {
-                const answer = await readline.question(
-                    `Type ${expected} to move its retained mirrors to Trash: `
-                );
-                return answer.trim() === expected;
-            } finally {
-                readline.close();
-            }
-        },
         listRetainedBackups(repository) {
             return listRetainedMirrorBackups({ repository });
         },

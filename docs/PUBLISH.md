@@ -30,9 +30,9 @@ The publisher performs the following work in clearly labeled phases:
 4. Compares every selected generated tree with its GitHub template repository in a disposable checkout
 5. Shows the complete staged diff for every planned publication
 6. For each changed existing repository, asks whether to append a normal commit or replace `main` with a fresh root commit when `--history` was not supplied
-7. Resolves the root-commit default or prompts for a missing append message, then asks you to type the required confirmation before continuing
+7. Resolves the root-commit default or prompts for a missing append message, then asks for final yes-or-no publication approval
 8. Publishes `main`, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
-9. After an interactive fresh publication, offers to move the verified recovery mirror to Trash when you explicitly accept the replacement
+9. After an interactive fresh publication, offers a yes-or-no choice to move the verified recovery mirror to Trash
 10. Prints a compact summary showing whether each selected template was unchanged, created, updated, replaced, or cancelled
 
 If a generated tree already matches its existing template repository, the publisher normally does not ask for a message or confirmation and does not create a commit or push. Explicit `--history fresh` is the exception because replacing maintainer history is itself the requested publication.
@@ -78,9 +78,9 @@ Fresh mode defaults to `Initial commit`; pass `--message` only when you want a d
 
 Before changing any ref, the publisher creates a bare mirror of the existing repository and verifies that the mirror contains the exact `main` commit observed during comparison. It stores the mirror under `TEMPLATE_PUBLISH_BACKUP_DIR` when that variable is set, otherwise under `${XDG_STATE_HOME:-$HOME/.local/state}/d1-r2-starter/template-publish-backups`. The summary prints the exact retained path.
 
-Fresh mode creates a parentless commit, then pushes with `--force-with-lease` pinned to the previously observed remote commit. If another publication moves `main` first, the push fails without overwriting it. Interactive confirmation requires typing the repository name followed by `fresh`, e.g. `j-256/d1-r2-starter-openai fresh`.
+Fresh mode creates a parentless commit, then pushes with `--force-with-lease` pinned to the previously observed remote commit. If another publication moves `main` first, the push fails without overwriting it. The interactive publication prompt names the repository and the history-replacing action; answer `y` or `yes` to continue, and any other answer cancels that publication.
 
-After the rewritten remote and template setting are verified, an interactive run prints the published commit URL. Inspect the result, then type the repository name followed by `accepted`, e.g. `j-256/d1-r2-starter-openai accepted`, to move the mirror to Trash. Press Enter or type anything else to retain it. A non-interactive run retains the mirror because `--yes` authorizes publication but does not express post-publication acceptance.
+After the rewritten remote and template setting are verified, an interactive run prints the published commit URL and asks whether to move the mirror to Trash. Answer `y` or `yes` to move it, or press Enter to retain it. A non-interactive run retains the mirror because `--yes` authorizes publication but does not request post-publication cleanup.
 
 Every publisher run surfaces retained mirrors before generation. Fresh mode refuses to create another mirror for a repository that already has one, preventing unresolved backups from accumulating unnoticed. Append mode remains available because it does not rewrite history or need another recovery mirror.
 
@@ -98,13 +98,13 @@ Limit the list to one variant:
 npm run template:backups -- openai
 ```
 
-After you have inspected and accepted a rewritten repository, ask the manager to show the exact mirrors and move them to Trash:
+After you have inspected a rewritten repository and no longer need its recovery mirrors, ask the manager to show the exact paths and move them to Trash:
 
 ```bash
 npm run template:backups -- trash openai
 ```
 
-Cleanup requires typing the repository name followed by `accepted`. If restoration is needed instead, use the retained bare mirror to inspect and deliberately restore the previous refs.
+The explicit `trash` action and required variant are the cleanup approval, so the command does not ask for a second confirmation. If restoration is needed instead, use the retained bare mirror to inspect and deliberately restore the previous refs.
 
 Passing `--history fresh` also replaces history when the generated files are unchanged. This is useful when the only intended change is collapsing the template repository's maintainer history to a new root. An interactive run without `--history` continues to skip unchanged repositories.
 
@@ -124,7 +124,7 @@ For append mode, omit `--message` when the templates need different commit messa
 
 Pass `--yes` to disable interactive prompts and make the command invocation itself the approval to publish after every safety check passes. It supplies consent, not a history choice: an existing repository selected for publication still needs `--history`. `--message` supplies or overrides the commit message, but it is not always required. Creating a repository and replacing one with `fresh` both produce a root commit and therefore default to `Initial commit`; an `append` update has no meaningful default, so it requires `--message` under `--yes` or prompts without `--yes`.
 
-The full staged diff is still printed before any commit. `--yes` does not bypass factory checks, generated-tree guards, remote leases, backup creation, or remote verification. It also does not accept or delete a fresh-mode recovery mirror; backup acceptance remains a separate human decision after inspecting the rewritten repository.
+The full staged diff is still printed before any commit. `--yes` does not bypass factory checks, generated-tree guards, remote leases, backup creation, or remote verification. It also does not delete a fresh-mode recovery mirror; cleanup remains a separate human decision after inspecting the rewritten repository.
 
 Use non-interactive mode only when the complete command is the publication approval, such as a controlled release job:
 
