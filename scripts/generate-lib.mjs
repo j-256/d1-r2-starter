@@ -7,7 +7,7 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 
 // Paths copied verbatim into BOTH emitted trees. This is the shared product
 // (openai gets these via copy-root; only the wrangler emit consumes this list)
@@ -45,6 +45,9 @@ export const OPENAI_DROP_SCRIPTS = [
     "generate.mjs",
     "generate-lib.mjs",
     "generate.test.mjs",
+    "publish-template.mjs",
+    "publish-template-lib.mjs",
+    "publish-template.test.mjs",
 ];
 
 // Factory-only files that live at non-dropped root paths and so survive the
@@ -58,7 +61,11 @@ export const OPENAI_DROP_FILES = ["docs/PUBLISH.md"];
 // dropped generator files, so leaving them in the emitted openai package.json
 // yields commands that fail with module-not-found. db:generate is unrelated
 // (drizzle) and is intentionally NOT listed
-export const OPENAI_DROP_SCRIPT_KEYS = ["generate", "test:generate"];
+export const OPENAI_DROP_SCRIPT_KEYS = [
+    "generate",
+    "test:generate",
+    "template:publish",
+];
 
 // Forbidden tokens for the WRANGLER tree (contents and paths), case-insensitive
 export const RESIDUE_PATTERN = /oai-|\.openai|chatgpt|siwc|vinext|codex-preview/i;
@@ -67,8 +74,16 @@ export const RESIDUE_PATTERN = /oai-|\.openai|chatgpt|siwc|vinext|codex-preview/
 export const FORBIDDEN_DEPS = ["next", "react", "react-dom", "vinext"];
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist"]);
+const COPY_EXCLUDED_NAMES = new Set([".DS_Store", ".git"]);
 // Binary-ish extensions the content scan should skip (paths still checked)
 const BINARY_EXT = /\.(png|jpg|jpeg|gif|ico|woff2?|ttf|otf|webp)$/i;
+
+export function copyGeneratedPath(from, to) {
+    cpSync(from, to, {
+        filter: (source) => !COPY_EXCLUDED_NAMES.has(basename(source)),
+        recursive: true,
+    });
+}
 
 function walk(root) {
     const files = [];
@@ -131,7 +146,7 @@ export function scanForResidue(root) {
     return violations;
 }
 
-/** Emits the openai tree: copy-root minus drops, then placeholder the id */
+/** Emits the openai tree without factory tooling or factory Site linkage */
 export function emitOpenai(repoRoot, outDir) {
     rmSync(outDir, { recursive: true, force: true });
     mkdirSync(outDir, { recursive: true });
@@ -140,7 +155,7 @@ export function emitOpenai(repoRoot, outDir) {
         if (OPENAI_DROP.includes(entry.name)) continue;
         const from = join(repoRoot, entry.name);
         const to = join(outDir, entry.name);
-        cpSync(from, to, { recursive: true });
+        copyGeneratedPath(from, to);
     }
 
     // Drop the generator files from the copied scripts/ dir
@@ -171,10 +186,10 @@ export function emitOpenai(repoRoot, outDir) {
     }
     writeFileSync(packagePath, JSON.stringify(pkg, null, 2) + "\n");
 
-    // Placeholder the real project_id in the emitted hosting.json only
+    // Remove the factory Site linkage from the reusable emitted template
     const hostingPath = join(outDir, ".openai", "hosting.json");
     const hosting = JSON.parse(readFileSync(hostingPath, "utf8"));
-    hosting.project_id = "REPLACE_WITH_YOUR_SITES_PROJECT_ID";
+    delete hosting.project_id;
     writeFileSync(hostingPath, JSON.stringify(hosting, null, 2) + "\n");
 }
 
@@ -219,16 +234,12 @@ export function emitWrangler(repoRoot, outDir) {
     mkdirSync(outDir, { recursive: true });
 
     for (const shared of SHARED_PATHS) {
-        cpSync(join(repoRoot, shared), join(outDir, shared), {
-            recursive: true,
-        });
+        copyGeneratedPath(join(repoRoot, shared), join(outDir, shared));
     }
 
     // Lay the wrangler overlay contents at the tree root
     const overlay = join(repoRoot, "variants", "wrangler");
     for (const entry of readdirSync(overlay, { withFileTypes: true })) {
-        cpSync(join(overlay, entry.name), join(outDir, entry.name), {
-            recursive: true,
-        });
+        copyGeneratedPath(join(overlay, entry.name), join(outDir, entry.name));
     }
 }
