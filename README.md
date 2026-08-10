@@ -1,24 +1,24 @@
-# Starter storage control plane
+# Cloudflare D1 + R2 starter (OpenAI Sites)
 
-A small, private D1 and R2 control plane running on
-[Vinext](https://github.com/cloudflare/vinext). The application is written in
-strict TypeScript and keeps provider-specific storage behavior behind a shared
-text-storage contract.
+A D1 (SQL) and R2 (object storage) control plane that deploys on OpenAI Sites (which runs on Cloudflare), with the parts that are easy to get wrong already done right: explicit auth with no allow-all default, migration-owned schema, and a storage core you can point at a different database or object store without rewriting your API. Written in strict TypeScript on [Vinext](https://github.com/cloudflare/vinext).
 
-## Prerequisites
+## Why start here
 
-- Node.js `>=22.13.0`
-- Linux with `flock`, `curl`, and GNU `timeout`
+- **Swappable storage core.** Your routes talk to one provider-neutral `TextStore` contract, never to D1 or R2 directly. Swap adapters at a single seam (`storage/create-services.ts`) to target another SQLite-compatible database or object store, and the API and UI stay the same.
+- **Auth is always explicit.** The core ships no allow-all default: the composition root must supply a concrete `Authorizer`, so the auth decision is never implicit. This hosted variant trusts the Sites access policy via `platformTrustAuthorizer`; a self-hosted deployment swaps in a real check at the same seam.
+- **Schema truth lives in migrations.** Drizzle owns the schema; the adapters never `CREATE TABLE` at runtime, so the database can't drift from the code. A worked migration (`0001`) shows how to evolve it with a backwards-compatible column.
+- **Tests run with zero install.** The core suite is buildless: no `node_modules`, no build step, so you can verify the storage contract before you deploy anything.
 
-## Sites Lifecycle
+## Quickstart
 
-The Sites lifecycle CLI runs the locked dependency install before returning this checkout. Edit the source under `app/`, then checkpoint when a coherent milestone is ready to inspect or share. The remote Sites builder runs `npm run build` against the pushed commit. Do not repeat install or build as a normal pre-checkpoint step.
+This starter is already wired for OpenAI Sites. Edit the source under `app/`, then checkpoint when a milestone is ready to inspect or share. The remote Sites builder runs `npm run build` against the pushed commit, and the migrations under `drizzle/` are applied by the platform before the new Worker version runs, so there is no manual install, build, or migrate step in the normal flow.
 
-This starter does not use `wrangler.jsonc`.
+For local iteration:
 
-`install:ci` is intentionally a single, non-retrying `npm ci`. It refuses a concurrent install for the same project, consumes a matching image-seeded npm cache with `--prefer-offline` while retaining registry fallback for a missing cache object, otherwise downloads and verifies the complete vinext tarball recorded in `package-lock.json`, limits npm to one socket, and terminates a stalled install. `build` applies a short timeout and then validates the Sites artifact. These helpers target Linux and use GNU `timeout`; they are not native macOS scripts.
-
-Scripts that need writable project-scoped home, npm, XDG, and temporary paths use `scripts/sites-env.sh`. The `dev` and `start` scripts honor the caller's runtime environment and keep Wrangler logs inside the checkout. The generated `.sites-runtime/` directory is disposable and ignored by Git.
+```bash
+npm run dev          # start the Vite/Vinext dev server
+npm test             # run the buildless core suite (no node_modules needed)
+```
 
 ## Architecture
 
@@ -29,8 +29,10 @@ The core application depends on the provider-neutral `TextStore` interface in
 HTTP route -> TextStore -> D1 or R2 adapter -> runtime binding
 ```
 
-- `app/api/_shared/text-store-route.ts` owns request parsing, validation, the
+- `routes/text-store-route.ts` owns request parsing, validation, the
   authorization gate, and the stable HTTP response shape used by both resources.
+  `app/api/d1/route.ts` and `app/api/r2/route.ts` are thin delegators that
+  re-export it.
 - `storage/contracts.ts` also defines an optional `contentType` on stored items;
   both adapters persist and return it (D1 in a column, R2 in object HTTP
   metadata), defaulting to `text/plain; charset=utf-8`.
@@ -50,9 +52,9 @@ HTTP route -> TextStore -> D1 or R2 adapter -> runtime binding
 - `.openai/hosting.json` declares the logical D1 and R2 binding names managed by
   Sites.
 
-This repository is currently the hosted (OpenAI Sites) variant. A self-hosted
-Wrangler variant is planned; the core under `storage/`, `db/`, and `drizzle/` is
-kept platform-neutral so it can be shared between the two.
+The core under `storage/`, `db/`, and `drizzle/` imports no platform APIs, so
+the same product logic runs unchanged on another runtime; this repository wires
+it to the hosted OpenAI Sites platform.
 
 ## Authorization
 
@@ -65,18 +67,6 @@ which trusts the Sites access policy in front of the Worker and allows every
 request that reaches it. A self-hosted deployment MUST replace this with a real
 check (for example a shared-secret or bearer-token authorizer reading from an
 env binding) before exposing the routes.
-
-## Setup
-
-Apply the D1 migrations before the first run so the `d1_values` table exists:
-
-```bash
-# Self-hosted (Wrangler): apply to your D1 database
-wrangler d1 migrations apply <DATABASE>
-```
-
-On the hosted Sites platform the migrations under `drizzle/` are applied by the
-platform before the new Worker version runs; no manual step is needed there.
 
 ## D1 migrations
 
@@ -100,10 +90,32 @@ SQL, and add explicit data backfills only when the schema change requires them.
 The production build packages the full migration history under
 `dist/.openai/drizzle/` for Sites to apply before the new Worker version runs.
 
+If you self-host instead of using Sites, apply the migrations to your own D1
+database before the first run so the `d1_values` table exists:
+
+```bash
+wrangler d1 migrations apply <DATABASE>
+```
+
 The compiler enables strict mode plus unchecked-index, exact-optional-property,
 unused-code, implicit-return, fallthrough, and casing checks. Library declaration
 files remain skipped because Vinext, Next.js, and Cloudflare own those external
 types; all project TypeScript is still checked.
+
+## Prerequisites
+
+- Node.js `>=22.13.0`
+- Linux with `flock`, `curl`, and GNU `timeout` (for the Sites build helpers)
+
+## Sites Lifecycle
+
+The Sites lifecycle CLI runs the locked dependency install before returning this checkout. Edit the source under `app/`, then checkpoint when a coherent milestone is ready to inspect or share. The remote Sites builder runs `npm run build` against the pushed commit. Do not repeat install or build as a normal pre-checkpoint step.
+
+This starter does not use `wrangler.jsonc`.
+
+`install:ci` is intentionally a single, non-retrying `npm ci`. It refuses a concurrent install for the same project, consumes a matching image-seeded npm cache with `--prefer-offline` while retaining registry fallback for a missing cache object, otherwise downloads and verifies the complete vinext tarball recorded in `package-lock.json`, limits npm to one socket, and terminates a stalled install. `build` applies a short timeout and then validates the Sites artifact. These helpers target Linux and use GNU `timeout`; they are not native macOS scripts.
+
+Scripts that need writable project-scoped home, npm, XDG, and temporary paths use `scripts/sites-env.sh`. The `dev` and `start` scripts honor the caller's runtime environment and keep Wrangler logs inside the checkout. The generated `.sites-runtime/` directory is disposable and ignored by Git.
 
 ## Workspace Auth Headers
 
