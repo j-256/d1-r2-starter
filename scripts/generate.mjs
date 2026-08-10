@@ -2,7 +2,12 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { emitOpenai, emitWrangler, scanForResidue } from "./generate-lib.mjs";
+import {
+    emitOpenai,
+    emitWrangler,
+    scanForResidue,
+    scanOpenaiResidue,
+} from "./generate-lib.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(repoRoot, "dist");
@@ -29,8 +34,8 @@ function runInTreeTests(treeDir, label) {
     });
 }
 
-function runResidueGuard(treeDir, label) {
-    const violations = scanForResidue(treeDir);
+function runResidueGuard(treeDir, label, scan = scanForResidue) {
+    const violations = scan(treeDir);
     if (violations.length > 0) {
         console.error(`RESIDUE GUARD FAILED for ${label}:`);
         for (const violation of violations) console.error(`  - ${violation}`);
@@ -54,6 +59,7 @@ console.log("Generating dist/openai ...");
 const openaiDir = join(distRoot, "openai");
 emitOpenai(repoRoot, openaiDir);
 assertOpenaiPlaceholder(openaiDir);
+runResidueGuard(openaiDir, "openai", scanOpenaiResidue);
 runInTreeTests(openaiDir, "openai");
 
 console.log("Generating dist/wrangler ...");

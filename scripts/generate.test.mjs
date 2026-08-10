@@ -3,7 +3,12 @@ import test from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scanForResidue, RESIDUE_PATTERN, FORBIDDEN_DEPS } from "./generate-lib.mjs";
+import {
+    scanForResidue,
+    scanOpenaiResidue,
+    RESIDUE_PATTERN,
+    FORBIDDEN_DEPS,
+} from "./generate-lib.mjs";
 
 function tempTree() {
     return mkdtempSync(join(tmpdir(), "gen-guard-"));
@@ -65,4 +70,69 @@ test("RESIDUE_PATTERN and FORBIDDEN_DEPS cover the expected tokens", () => {
     assert.match("codex-preview", RESIDUE_PATTERN);
     assert.equal(FORBIDDEN_DEPS.includes("next"), true);
     assert.equal(FORBIDDEN_DEPS.includes("vinext"), true);
+});
+
+// A minimal emitted-openai shell that scanOpenaiResidue should pass
+function writeCleanOpenaiTree(root) {
+    mkdirSync(join(root, "scripts"));
+    writeFileSync(join(root, "scripts", "sites-env.sh"), "#!/usr/bin/env bash\n");
+    writeFileSync(
+        join(root, "package.json"),
+        JSON.stringify({ scripts: { build: "vinext build", typecheck: "tsc" } })
+    );
+}
+
+test("scanOpenaiResidue passes a clean openai tree", () => {
+    const root = tempTree();
+    try {
+        writeCleanOpenaiTree(root);
+        assert.deepEqual(scanOpenaiResidue(root), []);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("scanOpenaiResidue flags a leaked factory-only docs/PUBLISH.md", () => {
+    const root = tempTree();
+    try {
+        writeCleanOpenaiTree(root);
+        mkdirSync(join(root, "docs"));
+        writeFileSync(join(root, "docs", "PUBLISH.md"), "# factory only\n");
+        const violations = scanOpenaiResidue(root);
+        assert.equal(violations.some((v) => v.includes("docs/PUBLISH.md")), true);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("scanOpenaiResidue flags dangling generate scripts in package.json", () => {
+    const root = tempTree();
+    try {
+        writeCleanOpenaiTree(root);
+        writeFileSync(
+            join(root, "package.json"),
+            JSON.stringify({
+                scripts: {
+                    build: "vinext build",
+                    generate: "node scripts/generate.mjs",
+                },
+            })
+        );
+        const violations = scanOpenaiResidue(root);
+        assert.equal(violations.some((v) => v.includes("generate")), true);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("scanOpenaiResidue flags a leaked generator script under scripts/", () => {
+    const root = tempTree();
+    try {
+        writeCleanOpenaiTree(root);
+        writeFileSync(join(root, "scripts", "generate.mjs"), "// leaked\n");
+        const violations = scanOpenaiResidue(root);
+        assert.equal(violations.some((v) => v.includes("generate.mjs")), true);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
 });
