@@ -18,14 +18,16 @@ npm run template:publish -- openai
 
 The publisher performs the following work in clearly labeled phases:
 
-1. Confirms that the factory worktree is clean and that `HEAD` matches `origin/main`
-2. Runs the factory tooling tests and generates both templates once, even when both repositories are selected
-3. Compares every selected generated tree with its GitHub template repository in a disposable checkout
-4. Shows the complete staged diff for every planned publication
-5. For each changed existing repository, asks whether to append a normal commit or replace `main` with a fresh root commit when `--history` was not supplied
-6. Prompts for a commit message when none was supplied, then asks you to type the required confirmation before continuing
-7. Publishes `main`, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
-8. Prints a compact summary showing whether each selected template was unchanged, created, updated, replaced, or cancelled
+1. Surfaces any retained recovery mirrors from earlier fresh publications
+2. Confirms that the factory worktree is clean and that `HEAD` matches `origin/main`
+3. Runs the factory tooling tests and generates both templates once, even when both repositories are selected
+4. Compares every selected generated tree with its GitHub template repository in a disposable checkout
+5. Shows the complete staged diff for every planned publication
+6. For each changed existing repository, asks whether to append a normal commit or replace `main` with a fresh root commit when `--history` was not supplied
+7. Prompts for a commit message when none was supplied, then asks you to type the required confirmation before continuing
+8. Publishes `main`, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
+9. After an interactive fresh publication, offers to move the verified recovery mirror to Trash when you explicitly accept the replacement
+10. Prints a compact summary showing whether each selected template was unchanged, created, updated, replaced, or cancelled
 
 If a generated tree already matches its existing template repository, the publisher normally does not ask for a message or confirmation and does not create a commit or push. Explicit `--history fresh` is the exception because replacing maintainer history is itself the requested publication.
 
@@ -64,11 +66,35 @@ Choose `fresh` at the interactive prompt or pass it explicitly:
 npm run template:publish -- openai --history fresh --message "Initial commit"
 ```
 
-Before changing any ref, the publisher creates a bare mirror of the existing repository and verifies that the mirror contains the exact `main` commit observed during comparison. It stores the mirror under `TEMPLATE_PUBLISH_BACKUP_DIR` when that variable is set, otherwise under `${XDG_STATE_HOME:-~/.local/state}/d1-r2-starter/template-publish-backups`. The summary prints the exact retained path.
+Before changing any ref, the publisher creates a bare mirror of the existing repository and verifies that the mirror contains the exact `main` commit observed during comparison. It stores the mirror under `TEMPLATE_PUBLISH_BACKUP_DIR` when that variable is set, otherwise under `${XDG_STATE_HOME:-$HOME/.local/state}/d1-r2-starter/template-publish-backups`. The summary prints the exact retained path.
 
 Fresh mode creates a parentless commit, then pushes with `--force-with-lease` pinned to the previously observed remote commit. If another publication moves `main` first, the push fails without overwriting it. Interactive confirmation requires typing the repository name followed by `fresh`, e.g. `j-256/d1-r2-starter-openai fresh`.
 
-The publisher never deletes a mirror backup. Keep it until the rewritten repository has been verified and you are satisfied with the result, then remove it manually. If restoration is needed, use the retained mirror to inspect and deliberately restore the previous refs.
+After the rewritten remote and template setting are verified, an interactive run prints the published commit URL. Inspect the result, then type the repository name followed by `accepted`, e.g. `j-256/d1-r2-starter-openai accepted`, to move the mirror to Trash. Press Enter or type anything else to retain it. A non-interactive run retains the mirror because `--yes` authorizes publication but does not express post-publication acceptance.
+
+Every publisher run surfaces retained mirrors before generation. Fresh mode refuses to create another mirror for a repository that already has one, preventing unresolved backups from accumulating unnoticed. Append mode remains available because it does not rewrite history or need another recovery mirror.
+
+### Manage retained mirrors
+
+List every retained template publication mirror:
+
+```bash
+npm run template:backups
+```
+
+Limit the list to one variant:
+
+```bash
+npm run template:backups -- openai
+```
+
+After you have inspected and accepted a rewritten repository, ask the manager to show the exact mirrors and move them to Trash:
+
+```bash
+npm run template:backups -- trash openai
+```
+
+Cleanup requires typing the repository name followed by `accepted`. If restoration is needed instead, use the retained bare mirror to inspect and deliberately restore the previous refs.
 
 Passing `--history fresh` also replaces history when the generated files are unchanged. This is useful when the only intended change is collapsing the template repository's maintainer history to a new root. An interactive run without `--history` continues to skip unchanged repositories.
 
@@ -86,7 +112,7 @@ Omit `--message` when the templates need different commit messages; the publishe
 
 ## Non-interactive publication
 
-Pass `--yes` to skip the history, message, and repository-name prompts. The full staged diff is still printed before the commit. An existing repository selected for publication requires explicit `--history` and `--message` values in this mode. Use this only when the command invocation itself is the publication approval, such as a controlled release job:
+Pass `--yes` to skip the history, message, and repository-name prompts. The full staged diff is still printed before the commit. An existing repository selected for publication requires explicit `--history` and `--message` values in this mode. Fresh mode retains its recovery mirror and prints the backup-management command, so acceptance remains a separate human decision. Use this only when the command invocation itself is the publication approval, such as a controlled release job:
 
 ```bash
 npm run template:publish -- wrangler --history append --message "Refresh Worker dependencies" --yes
@@ -101,4 +127,4 @@ npm run template:publish -- wrangler --history append --message "Refresh Worker 
 - [ ] Each generated tree contains the MIT license and matching package metadata
 - [ ] The generated Wrangler tree contains no OpenAI, ChatGPT, Next.js, React, or Vinext residue
 
-The publisher enforces the clean factory state, factory tooling tests, generation gates, emitted manifest project-linkage guard, residue rules, generated tests, explicit changed-path staging, fresh-mode mirror backup, lease-protected history replacement, and remote verification. The runtime-specific smoke checks remain manual because they require provisioned Cloudflare or Sites environments.
+The publisher enforces the clean factory state, factory tooling tests, generation gates, emitted manifest project-linkage guard, residue rules, generated tests, explicit changed-path staging, fresh-mode mirror backup, unresolved-mirror accumulation guard, lease-protected history replacement, and remote verification. The runtime-specific smoke checks remain manual because they require provisioned Cloudflare or Sites environments.

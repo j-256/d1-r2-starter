@@ -8,23 +8,22 @@ import {
     rmSync,
     statSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import {
+    availableBackupPath,
+    listRetainedMirrorBackups,
+    moveMirrorBackupsToTrash,
+    repositoryAcceptancePhrase,
+    TEMPLATE_BACKUP_COMMANDS,
+    templateBackupRoot,
+} from "./template-backups-lib.mjs";
+import { TEMPLATE_VARIANTS } from "./template-variants.mjs";
 
-export const TEMPLATE_VARIANTS = Object.freeze({
-    openai: Object.freeze({
-        outputDirectory: "dist/openai",
-        repository: "j-256/d1-r2-starter-openai",
-    }),
-    wrangler: Object.freeze({
-        outputDirectory: "dist/wrangler",
-        repository: "j-256/d1-r2-starter-wrangler",
-    }),
-});
+export { TEMPLATE_VARIANTS };
 
 const DEFAULT_BRANCH = "main";
-const BACKUP_DIRECTORY_ENV = "TEMPLATE_PUBLISH_BACKUP_DIR";
 const FACTORY_REMOTE = "origin";
 const HISTORY_MODES = Object.freeze({
     append: "append",
@@ -46,7 +45,6 @@ const PUBLICATION_STATUSES = Object.freeze({
     updated: "updated",
 });
 const TEMPLATE_REMOTE = "origin";
-const XDG_STATE_HOME_ENV = "XDG_STATE_HOME";
 const PUBLISHED_STATUSES = new Set([
     PUBLICATION_STATUSES.created,
     PUBLICATION_STATUSES.replaced,
@@ -88,41 +86,6 @@ function inherited(command, args, cwd) {
 
 function repositoryUrl(repository) {
     return `https://github.com/${repository}.git`;
-}
-
-function templateBackupRoot() {
-    const configured = process.env[BACKUP_DIRECTORY_ENV]?.trim();
-    if (configured) return resolve(configured);
-
-    const configuredStateHome = process.env[XDG_STATE_HOME_ENV]?.trim();
-    const stateHome = configuredStateHome
-        ? resolve(configuredStateHome)
-        : join(homedir(), ".local", "state");
-    return join(
-        stateHome,
-        "d1-r2-starter",
-        "template-publish-backups"
-    );
-}
-
-function backupTimestamp() {
-    return new Date().toISOString()
-        .replaceAll("-", "")
-        .replaceAll(":", "")
-        .replace(/\.\d{3}Z$/, "Z");
-}
-
-function availableBackupPath(root, repository) {
-    mkdirSync(root, { recursive: true });
-    const slug = repository.replace(/[^A-Za-z0-9._-]+/g, "--");
-    const basename = `${slug}-${backupTimestamp()}`;
-    let suffix = 0;
-    let candidate = join(root, `${basename}.git`);
-    while (existsSync(candidate)) {
-        suffix += 1;
-        candidate = join(root, `${basename}-${suffix}.git`);
-    }
-    return candidate;
 }
 
 export function parseHttpStatus(output) {
@@ -277,13 +240,38 @@ function logPhase(dependencies, title, leadingBlank = true) {
     dependencies.log(`== ${title} ==`);
 }
 
+async function logRetainedBackups(dependencies) {
+    const records = [];
+    for (const [variant, config] of Object.entries(TEMPLATE_VARIANTS)) {
+        const paths = await dependencies.listRetainedBackups(
+            config.repository
+        );
+        records.push(...paths.map((path) => ({ path, variant })));
+    }
+    if (records.length === 0) return records;
+
+    logPhase(dependencies, "Retained recovery mirrors", false);
+    for (const record of records) {
+        dependencies.log(`  ${record.variant}: ${record.path}`);
+    }
+    dependencies.log("");
+    dependencies.log(
+        `Review or clean them with ${TEMPLATE_BACKUP_COMMANDS.list}.`
+    );
+    return records;
+}
+
 function logSummary(dependencies, results) {
     logPhase(dependencies, "Summary");
     const labelWidth = Math.max(
         ...results.map(({ variant }) => variant.length)
     ) + 2;
     for (const result of results) {
-        const backup = result.backup ? ` (backup: ${result.backup})` : "";
+        const backup = result.backup
+            ? ` (backup: ${result.backup})`
+            : result.backupTrashed
+                ? " (backup moved to Trash)"
+                : "";
         dependencies.log(
             `${result.variant.padEnd(labelWidth)}${result.status}${backup}`
         );
@@ -291,7 +279,7 @@ function logSummary(dependencies, results) {
     if (results.some(({ backup }) => backup)) {
         dependencies.log("");
         dependencies.log(
-            "Keep each mirror backup until the rewritten remote is verified and accepted."
+            `After accepting the replacement, run ${TEMPLATE_BACKUP_COMMANDS.trash}.`
         );
     }
     dependencies.log("");
@@ -336,6 +324,20 @@ async function historyModeFor(plan, options, dependencies) {
     return history;
 }
 
+async function assertFreshBackupAvailable(plan, history, dependencies) {
+    if (history !== HISTORY_MODES.fresh) return;
+    const retained = await dependencies.listRetainedBackups(
+        plan.config.repository
+    );
+    if (retained.length === 0) return;
+
+    throw new Error([
+        `${plan.config.repository} already has a retained recovery mirror:`,
+        ...retained.map((path) => `  ${path}`),
+        `Review it with ${TEMPLATE_BACKUP_COMMANDS.list}. Fresh publication stopped to avoid accumulating unresolved mirrors.`,
+    ].join("\n"));
+}
+
 function publicationAction(plan, history) {
     if (!plan.exists) return PUBLICATION_ACTIONS.create;
     return history === HISTORY_MODES.fresh
@@ -354,7 +356,8 @@ export async function publishTemplates(options, dependencies) {
     const variants = selectedVariants(options.variant);
     const workspaces = [];
 
-    logPhase(dependencies, "Verify factory", false);
+    const retainedBackups = await logRetainedBackups(dependencies);
+    logPhase(dependencies, "Verify factory", retainedBackups.length > 0);
     await dependencies.assertFactoryReady();
     dependencies.log("Factory main matches origin/main.");
 
@@ -456,6 +459,7 @@ export async function publishTemplates(options, dependencies) {
             );
             const action = publicationAction(plan, history);
             if (history) dependencies.log(`History mode: ${history}`);
+            await assertFreshBackupAvailable(plan, history, dependencies);
             const commitMessage = await commitMessageFor(
                 plan,
                 options,
@@ -483,7 +487,7 @@ export async function publishTemplates(options, dependencies) {
                     expectedCommit: plan.workspace.remoteCommit,
                     repository: plan.config.repository,
                 });
-                dependencies.log(`Mirror backup retained at ${backup}`);
+                dependencies.log(`Mirror backup created at ${backup}`);
             }
             const commit = await dependencies.createCommit({
                 changedPaths: plan.changedPaths,
@@ -516,9 +520,37 @@ export async function publishTemplates(options, dependencies) {
 
             const status = publicationStatus(plan, history);
             dependencies.log(`${plan.variant}: ${status} ${commit}`);
+            let backupTrashed = false;
+            if (backup && !options.yes) {
+                dependencies.log(
+                    `Verified replacement: https://github.com/${plan.config.repository}/commit/${commit}`
+                );
+                const accepted = await dependencies.confirmBackupAcceptance({
+                    repository: plan.config.repository,
+                });
+                if (accepted) {
+                    try {
+                        await dependencies.moveBackupsToTrash([backup]);
+                        dependencies.log("Mirror backup moved to Trash.");
+                        backup = undefined;
+                        backupTrashed = true;
+                    } catch (error) {
+                        const message = error instanceof Error
+                            ? error.message
+                            : String(error);
+                        dependencies.log(
+                            `Could not move the mirror to Trash: ${message}`
+                        );
+                    }
+                }
+            }
+            if (backup) {
+                dependencies.log(`Mirror backup retained at ${backup}`);
+            }
             results.push({
                 action,
                 backup,
+                backupTrashed,
                 commit,
                 repository: plan.config.repository,
                 status,
@@ -775,6 +807,35 @@ export function createSystemDependencies(repoRoot) {
             }
         },
 
+        async confirmBackupAcceptance({ repository }) {
+            if (!process.stdin.isTTY || !process.stdout.isTTY) {
+                throw new Error(
+                    `Accepting the replacement for ${repository} requires a terminal.`
+                );
+            }
+            const expected = repositoryAcceptancePhrase(repository);
+            const readline = createInterface({
+                input: process.stdin,
+                output: process.stdout,
+            });
+            try {
+                const answer = await readline.question(
+                    `After inspecting the replacement, type ${expected} to move its mirror to Trash, or press Enter to retain it: `
+                );
+                return answer.trim() === expected;
+            } finally {
+                readline.close();
+            }
+        },
+
+        async listRetainedBackups(repository) {
+            return listRetainedMirrorBackups({ repository });
+        },
+
+        async moveBackupsToTrash(paths) {
+            moveMirrorBackupsToTrash(paths, { cwd: repoRoot });
+        },
+
         async createMirrorBackup({
             backupRoot = templateBackupRoot(),
             expectedCommit,
@@ -784,6 +845,15 @@ export function createSystemDependencies(repoRoot) {
             if (!expectedCommit) {
                 throw new Error(
                     `Cannot back up ${repository} without the observed remote commit.`
+                );
+            }
+            const retained = listRetainedMirrorBackups({
+                backupRoot,
+                repository,
+            });
+            if (retained.length > 0) {
+                throw new Error(
+                    `${repository} already has a retained recovery mirror. Fresh publication stopped before creating another one.`
                 );
             }
             const backup = availableBackupPath(backupRoot, repository);

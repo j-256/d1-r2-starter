@@ -117,6 +117,20 @@ function fakeDependencies(options = {}) {
                     ?? options.requestedMessage
                     ?? UPDATE_MESSAGE;
             },
+            async confirmBackupAcceptance({ repository }) {
+                operations.push(`confirmBackupAcceptance:${repository}`);
+                return options.acceptedBackupByRepository?.[repository]
+                    ?? options.acceptedBackup
+                    ?? false;
+            },
+            async listRetainedBackups(repository) {
+                operations.push(`listRetainedBackups:${repository}`);
+                return options.retainedBackupsByRepository?.[repository] ?? [];
+            },
+            async moveBackupsToTrash(paths) {
+                operations.push(`moveBackupsToTrash:${paths.join(",")}`);
+                if (options.trashError) throw options.trashError;
+            },
             async createMirrorBackup({ repository }) {
                 operations.push(`createMirrorBackup:${repository}`);
                 return `backup:${repository}`;
@@ -347,6 +361,15 @@ test("system dependencies replace main with a backed-up parentless commit", asyn
         assert.equal(
             runGit(backup, ["rev-parse", "refs/heads/main"]).trim(),
             initialCommit
+        );
+        await assert.rejects(
+            dependencies.createMirrorBackup({
+                backupRoot,
+                expectedCommit: initialCommit,
+                repository: "local/template",
+                url: remote,
+            }),
+            /already has a retained recovery mirror/
         );
         assert.equal(
             runGit(checkout, ["rev-list", "--parents", "-n", "1", commit]).trim(),
@@ -653,7 +676,7 @@ test("publishTemplates replaces existing history only after creating a mirror", 
     );
     assert.equal(
         fake.operations.includes(
-            "log:Keep each mirror backup until the rewritten remote is verified and accepted."
+            "log:After accepting the replacement, run npm run template:backups -- trash <variant>."
         ),
         true
     );
@@ -685,6 +708,164 @@ test("explicit fresh mode replaces history even when files are unchanged", async
     );
     assert.equal(
         fake.operations.includes(`pushFresh:${WRANGLER_REPOSITORY}`),
+        true
+    );
+});
+
+test("publishTemplates surfaces retained mirrors before factory verification", async () => {
+    const backup = "/state/openai-backup.git";
+    const fake = fakeDependencies({
+        changedPaths: [],
+        exists: true,
+        retainedBackupsByRepository: {
+            [OPENAI_REPOSITORY]: [backup],
+        },
+    });
+    await publishTemplates(
+        {
+            help: false,
+            variant: "wrangler",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(
+        fake.operations.includes("log:== Retained recovery mirrors =="),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(`log:  openai: ${backup}`),
+        true
+    );
+    assert.equal(
+        fake.operations.indexOf(`listRetainedBackups:${OPENAI_REPOSITORY}`)
+            < fake.operations.indexOf("assertFactoryReady"),
+        true
+    );
+});
+
+test("publishTemplates refuses to accumulate fresh-mode mirrors", async () => {
+    const backup = "/state/openai-backup.git";
+    const fake = fakeDependencies({
+        exists: true,
+        retainedBackupsByRepository: {
+            [OPENAI_REPOSITORY]: [backup],
+        },
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                help: false,
+                history: "fresh",
+                message: UPDATE_MESSAGE,
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /stopped to avoid accumulating unresolved mirrors/
+    );
+    assert.equal(
+        fake.operations.includes(`createMirrorBackup:${OPENAI_REPOSITORY}`),
+        false
+    );
+    assert.equal(
+        fake.operations.some((operation) => operation.startsWith("commit:")),
+        false
+    );
+});
+
+test("interactive fresh publication trashes an accepted verified mirror", async () => {
+    const fake = fakeDependencies({
+        acceptedBackup: true,
+        exists: true,
+    });
+    const [result] = await publishTemplates(
+        {
+            help: false,
+            history: "fresh",
+            message: UPDATE_MESSAGE,
+            variant: "openai",
+            yes: false,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(result.backup, undefined);
+    assert.equal(result.backupTrashed, true);
+    const verify = fake.operations.indexOf(
+        `verifyPublished:${OPENAI_REPOSITORY}`
+    );
+    const accept = fake.operations.indexOf(
+        `confirmBackupAcceptance:${OPENAI_REPOSITORY}`
+    );
+    const trash = fake.operations.indexOf(
+        `moveBackupsToTrash:backup:${OPENAI_REPOSITORY}`
+    );
+    assert.equal(verify < accept, true);
+    assert.equal(accept < trash, true);
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.includes("replaced (backup moved to Trash)")
+        ),
+        true
+    );
+});
+
+test("interactive fresh publication retains a mirror when Trash fails", async () => {
+    const fake = fakeDependencies({
+        acceptedBackup: true,
+        exists: true,
+        trashError: new Error("trash unavailable"),
+    });
+    const [result] = await publishTemplates(
+        {
+            help: false,
+            history: "fresh",
+            message: UPDATE_MESSAGE,
+            variant: "openai",
+            yes: false,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(result.backup, `backup:${OPENAI_REPOSITORY}`);
+    assert.equal(result.backupTrashed, false);
+    assert.equal(
+        fake.operations.includes(
+            "log:Could not move the mirror to Trash: trash unavailable"
+        ),
+        true
+    );
+});
+
+test("non-interactive fresh publication retains its verified mirror", async () => {
+    const fake = fakeDependencies({ exists: true });
+    const [result] = await publishTemplates(
+        {
+            help: false,
+            history: "fresh",
+            message: UPDATE_MESSAGE,
+            variant: "openai",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(result.backup, `backup:${OPENAI_REPOSITORY}`);
+    assert.equal(result.backupTrashed, false);
+    assert.equal(
+        fake.operations.includes(
+            `confirmBackupAcceptance:${OPENAI_REPOSITORY}`
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.includes(
+            `log:Mirror backup retained at backup:${OPENAI_REPOSITORY}`
+        ),
         true
     );
 });
