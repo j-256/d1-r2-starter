@@ -11,7 +11,7 @@ A D1 (SQL) and R2 (object storage) control plane that deploys on OpenAI Sites (w
 
 ## Quickstart
 
-This starter is already wired for OpenAI Sites. Edit the source under `app/`, then checkpoint when a milestone is ready to inspect or share. The remote Sites builder runs `npm run build` against the pushed commit, and the migrations under `drizzle/` are applied by the platform before the new Worker version runs, so there is no manual install, build, or migrate step in the normal flow.
+This starter is already wired for OpenAI Sites. Edit the source under `app/`, then use ChatGPT Sites to save a reviewable version when a milestone is ready and deploy the approved version only when it is ready for its selected audience. For a local source project, Sites associates the saved version with the Git commit used for its build. Depending on the workflow, that build can happen in Sites or the workflow can supply an already validated artifact. The packaged migrations are applied before the new version receives traffic, so the hosted path has no manual migrate step.
 
 For local iteration:
 
@@ -49,8 +49,7 @@ HTTP route -> TextStore -> D1 or R2 adapter -> runtime binding
 - `db/schema.ts` is the sole schema source of truth. The adapters do NOT create
   tables at runtime; the generated migrations under `drizzle/` own the schema and
   must be applied before first use (see D1 migrations).
-- `.openai/hosting.json` declares the logical D1 and R2 binding names managed by
-  Sites.
+- `.openai/hosting.json` declares the logical D1 and R2 binding names managed by Sites. The reusable template omits `project_id`; Sites adds it after provisioning the hosted project.
 
 The core under `storage/`, `db/`, and `drizzle/` imports no platform APIs, so
 the same product logic runs unchanged on another runtime; this repository wires
@@ -96,11 +95,7 @@ Timestamps are stored as ISO-8601 UTC (`strftime('%Y-%m-%dT%H:%M:%fZ','now')` as
 the column default, matching the adapter's `new Date().toISOString()`), so
 lexical ordering of `updated_at` equals chronological ordering.
 
-Treat committed migration files as immutable history. Change `db/schema.ts`,
-run `npm run db:generate -- --name <descriptive-name>`, inspect the generated
-SQL, and add explicit data backfills only when the schema change requires them.
-The production build packages the full migration history under
-`dist/.openai/drizzle/` for Sites to apply before the new Worker version runs.
+Treat committed migration files as immutable history. Change `db/schema.ts`, run `npm run db:generate -- --name <descriptive-name>`, inspect the generated SQL, and add explicit data backfills only when the schema change requires them. The production build packages the full migration history under `dist/.openai/drizzle/`. Sites applies those migrations before the new version receives traffic.
 
 If you self-host instead of using Sites, apply the migrations to your own D1
 database before the first run so the `d1_values` table exists:
@@ -119,25 +114,21 @@ types; all project TypeScript is still checked.
 - Node.js `>=22.13.0`
 - Linux with `flock`, `curl`, and GNU `timeout` (for the Sites build helpers)
 
-## Sites Lifecycle
+## ChatGPT Sites workflow
 
-The Sites lifecycle CLI runs the locked dependency install before returning this checkout. Edit the source under `app/`, then checkpoint when a coherent milestone is ready to inspect or share. The remote Sites builder runs `npm run build` against the pushed commit. Do not repeat install or build as a normal pre-checkpoint step.
+Sites publishing has two stages: save a reviewable version, then deploy only the version approved for the intended audience. A saved version for a local source project is associated with the Git commit used for its build. Depending on the workflow, that build can happen in Sites or the workflow can supply an already validated artifact; do not assume every saved version runs `npm run build` remotely.
 
 This starter does not use `wrangler.jsonc`.
 
-`install:ci` is intentionally a single, non-retrying `npm ci`. It refuses a concurrent install for the same project, consumes a matching image-seeded npm cache with `--prefer-offline` while retaining registry fallback for a missing cache object, otherwise downloads and verifies the complete vinext tarball recorded in `package-lock.json`, limits npm to one socket, and terminates a stalled install. `build` applies a short timeout and then validates the Sites artifact. These helpers target Linux and use GNU `timeout`; they are not native macOS scripts.
+`install:ci` is intentionally a single, non-retrying `npm ci`. It refuses a concurrent install for the same project. When `SITES_NPM_CACHE_SEED` points to a matching seeded cache, the script restores it and uses `--prefer-offline` while retaining registry fallback. Without a matching seed, it downloads and verifies the complete Vinext tarball recorded in `package-lock.json`. The script limits npm to one socket and terminates a stalled install. `build` applies a short timeout and then validates the Sites artifact. These helpers target Linux and use GNU `timeout`; they are not native macOS scripts.
 
 Scripts that need writable project-scoped home, npm, XDG, and temporary paths use `scripts/sites-env.sh`. The `dev` and `start` scripts honor the caller's runtime environment and keep Wrangler logs inside the checkout. The generated `.sites-runtime/` directory is disposable and ignored by Git.
 
-## Workspace Auth Headers
+## Sites identity headers
 
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
+Workspace-restricted Sites use ChatGPT identity to enforce their audience settings. After a visitor signs in, Sites forwards the authenticated email address to server-side code in `oai-authenticated-user-email`.
 
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
+Sites may also provide `oai-authenticated-user-full-name` when the visitor's Sign in with ChatGPT profile has a non-empty name. The full-name value is percent-encoded UTF-8 and is accompanied by `oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
 
 Treat the full name as optional and fall back to email when it is absent:
 
@@ -160,10 +151,9 @@ export default async function Home() {
 }
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+## Optional Sites-managed Sign in with ChatGPT
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the Site needs optional or required Sign in with ChatGPT:
 
 - Use `getChatGPTUser()` for optional signed-in UI.
 - Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
@@ -175,17 +165,11 @@ optional or required ChatGPT sign-in:
 - Mark protected pages with `export const dynamic = "force-dynamic"` because
   they depend on per-request identity headers.
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+Sites owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the OAuth cookies, and identity header injection. Do not implement app routes for those reserved paths. Routes that do not import and call the helper remain anonymous-compatible.
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+Sign in with ChatGPT establishes identity only; it does not prove workspace membership. Use the Site's audience controls for workspace restrictions, or enforce explicit server-side membership or allowlist checks.
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+Use Sign in with ChatGPT for account pages, user-specific dashboards, saved records, and write actions tied to the current ChatGPT user. Leave public content anonymous.
 
 ## Diagnostic Commands
 
@@ -196,14 +180,15 @@ actions tied to the current ChatGPT user. Leave public content anonymous.
 - `npm run typecheck`: run the strict TypeScript compiler without emitting files
 - `npm test`: run the buildless core test suite (storage adapters, migrations, and the route authorization gate) with no build step
 - `npm run test:build`: run the full Sites build and artifact validation (Linux only; needs GNU `timeout`)
-- `npm run validate:artifact`: recheck an existing artifact's manifest and ESM `default.fetch` export
+- `npm run validate:artifact`: recheck an existing artifact's manifest, packaged migration history, and ESM `default.fetch` export
 - `npm run db:generate`: generate Drizzle migrations after schema changes
 
-Use build and validation commands for targeted diagnosis after a remote failure, not as part of the normal checkpoint path.
+Run build and validation commands when you need local release evidence or are diagnosing a failed Sites version; they are not required after every edit.
 
-The timeout defaults can be overridden for a controlled canary with `SITES_INSTALL_TIMEOUT`, `SITES_INSTALL_KILL_AFTER`, `SITES_BUILD_TIMEOUT`, and `SITES_BUILD_KILL_AFTER`. A timeout fails the command; the helpers never retry an unchanged install or build.
+`SITES_INSTALL_TIMEOUT`, `SITES_INSTALL_KILL_AFTER`, `SITES_BUILD_TIMEOUT`, and `SITES_BUILD_KILL_AFTER` are inputs to this repository's shell helpers; they do not configure Sites. Set them when invoking the helpers for a controlled canary. A timeout fails the command, and the helpers never retry an unchanged install or build.
 
 ## Learn More
 
+- [OpenAI Sites documentation](https://learn.chatgpt.com/docs/sites)
 - [vinext Documentation](https://github.com/cloudflare/vinext)
 - [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
