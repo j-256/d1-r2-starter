@@ -68,9 +68,9 @@ npm run template:publish -- wrangler --message "Refresh Worker dependencies" --y
 
 - [ ] Shared core changes are complete and committed on `main`
 - [ ] The Wrangler tree has been verified under its own toolchain with typecheck, migration application, and a `wrangler dev` smoke test
-- [ ] The OpenAI Sites build has been confirmed with `npm run test:build` or by the remote Sites builder
-- [ ] `dist/openai/.openai/hosting.json` contains the project ID placeholder rather than the factory project ID
+- [ ] The OpenAI Sites artifact has been confirmed with `npm run test:build` or through the Sites save-version workflow
+- [ ] `dist/openai/.openai/hosting.json` has no `project_id`, allowing Sites to provision a new project from the reusable template
 - [ ] Each generated tree contains the MIT license and matching package metadata
 - [ ] The generated Wrangler tree contains no OpenAI, ChatGPT, Next.js, React, or Vinext residue
 
-The publisher enforces the clean factory state, factory tooling tests, generation gates, placeholder, residue rules, generated tests, explicit changed-path commit, and remote verification. The runtime-specific smoke checks remain manual because they require provisioned Cloudflare or Sites environments.
+The publisher enforces the clean factory state, factory tooling tests, generation gates, emitted manifest project-linkage guard, residue rules, generated tests, explicit changed-path commit, and remote verification. The runtime-specific smoke checks remain manual because they require provisioned Cloudflare or Sites environments.

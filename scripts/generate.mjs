@@ -44,21 +44,21 @@ function runResidueGuard(treeDir, label, scan = scanForResidue) {
     console.log(`  residue guard passed for ${label}`);
 }
 
-function assertOpenaiPlaceholder(treeDir) {
+function assertOpenaiProjectIdAbsent(treeDir) {
     const hosting = JSON.parse(
         readFileSync(join(treeDir, ".openai", "hosting.json"), "utf8")
     );
-    if (hosting.project_id !== "REPLACE_WITH_YOUR_SITES_PROJECT_ID") {
-        console.error("openai emit did not placeholder project_id");
+    if (Object.hasOwn(hosting, "project_id")) {
+        console.error("openai emit retained project_id");
         process.exit(1);
     }
-    console.log("  openai project_id placeholder verified");
+    console.log("  openai project_id omission verified");
 }
 
 console.log("Generating dist/openai ...");
 const openaiDir = join(distRoot, "openai");
 emitOpenai(repoRoot, openaiDir);
-assertOpenaiPlaceholder(openaiDir);
+assertOpenaiProjectIdAbsent(openaiDir);
 runResidueGuard(openaiDir, "openai", scanOpenaiResidue);
 runInTreeTests(openaiDir, "openai");
 

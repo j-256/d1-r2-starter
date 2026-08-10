@@ -146,7 +146,7 @@ export function scanForResidue(root) {
     return violations;
 }
 
-/** Emits the openai tree: copy-root minus drops, then placeholder the id */
+/** Emits the openai tree without factory tooling or factory Site linkage */
 export function emitOpenai(repoRoot, outDir) {
     rmSync(outDir, { recursive: true, force: true });
     mkdirSync(outDir, { recursive: true });
@@ -186,10 +186,10 @@ export function emitOpenai(repoRoot, outDir) {
     }
     writeFileSync(packagePath, JSON.stringify(pkg, null, 2) + "\n");
 
-    // Placeholder the real project_id in the emitted hosting.json only
+    // Remove the factory Site linkage from the reusable emitted template
     const hostingPath = join(outDir, ".openai", "hosting.json");
     const hosting = JSON.parse(readFileSync(hostingPath, "utf8"));
-    hosting.project_id = "REPLACE_WITH_YOUR_SITES_PROJECT_ID";
+    delete hosting.project_id;
     writeFileSync(hostingPath, JSON.stringify(hosting, null, 2) + "\n");
 }
 
