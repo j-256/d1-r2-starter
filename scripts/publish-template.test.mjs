@@ -226,14 +226,36 @@ test("publishUsage documents history modes and persistent backups", () => {
     assert.match(usage, /all\|openai\|wrangler/);
     assert.match(usage, /both is an alias/);
     assert.match(usage, /--history append\|fresh/);
+    assert.match(usage, /root commits default to Initial commit/);
+    assert.match(usage, /Disable prompts and authorize publication/);
     assert.match(usage, /TEMPLATE_PUBLISH_BACKUP_DIR/);
 });
 
-test("resolveCommitMessage defaults only for initial publication", () => {
-    assert.equal(resolveCommitMessage(false), "Initial commit");
-    assert.equal(resolveCommitMessage(true, UPDATE_MESSAGE), UPDATE_MESSAGE);
+test("resolveCommitMessage defaults for root commits only", () => {
+    assert.equal(
+        resolveCommitMessage({ repositoryExists: false }),
+        "Initial commit"
+    );
+    assert.equal(
+        resolveCommitMessage({
+            history: "fresh",
+            repositoryExists: true,
+        }),
+        "Initial commit"
+    );
+    assert.equal(
+        resolveCommitMessage({
+            history: "append",
+            repositoryExists: true,
+            requestedMessage: UPDATE_MESSAGE,
+        }),
+        UPDATE_MESSAGE
+    );
     assert.throws(
-        () => resolveCommitMessage(true),
+        () => resolveCommitMessage({
+            history: "append",
+            repositoryExists: true,
+        }),
         /--message is required/
     );
 });
@@ -795,10 +817,90 @@ test("publishTemplates refuses to accumulate fresh-mode mirrors", async () => {
         fake.operations.includes(`createMirrorBackup:${OPENAI_REPOSITORY}`),
         false
     );
+    assert.equal(fake.operations.includes("assertFactoryReady"), false);
+    assert.equal(fake.operations.includes("generate"), false);
     assert.equal(
         fake.operations.some((operation) => operation.startsWith("commit:")),
         false
     );
+});
+
+test("explicit non-interactive fresh mode defaults its root commit message", async () => {
+    const fake = fakeDependencies({ exists: true });
+    const results = await publishTemplates(
+        {
+            help: false,
+            history: "fresh",
+            variant: "all",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.deepEqual(
+        results.map(({ status, variant }) => ({ status, variant })),
+        [
+            { status: "replaced", variant: "openai" },
+            { status: "replaced", variant: "wrangler" },
+        ]
+    );
+    assert.equal(
+        fake.operations.includes(
+            `commit:${OPENAI_REPOSITORY}:fresh:Initial commit:README.md`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            `commit:${WRANGLER_REPOSITORY}:fresh:Initial commit:README.md`
+        ),
+        true
+    );
+});
+
+test("explicit fresh mode keeps the initial message default for a missing repo", async () => {
+    const fake = fakeDependencies({ exists: false });
+    const [result] = await publishTemplates(
+        {
+            help: false,
+            history: "fresh",
+            variant: "openai",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(result.status, "created");
+    assert.equal(
+        fake.operations.includes(
+            `commit:${OPENAI_REPOSITORY}:create:Initial commit:README.md`
+        ),
+        true
+    );
+});
+
+test("explicit fresh mode ignores retained mirrors for unselected variants", async () => {
+    const openaiBackup = "/state/openai-backup.git";
+    const fake = fakeDependencies({
+        changedPaths: [],
+        exists: true,
+        retainedBackupsByRepository: {
+            [OPENAI_REPOSITORY]: [openaiBackup],
+        },
+    });
+    const [result] = await publishTemplates(
+        {
+            help: false,
+            history: "fresh",
+            message: UPDATE_MESSAGE,
+            variant: "wrangler",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(result.variant, "wrangler");
+    assert.equal(result.status, "replaced");
 });
 
 test("interactive fresh publication trashes an accepted verified mirror", async () => {

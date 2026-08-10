@@ -30,12 +30,14 @@ The publisher performs the following work in clearly labeled phases:
 4. Compares every selected generated tree with its GitHub template repository in a disposable checkout
 5. Shows the complete staged diff for every planned publication
 6. For each changed existing repository, asks whether to append a normal commit or replace `main` with a fresh root commit when `--history` was not supplied
-7. Prompts for a commit message when none was supplied, then asks you to type the required confirmation before continuing
+7. Resolves the root-commit default or prompts for a missing append message, then asks you to type the required confirmation before continuing
 8. Publishes `main`, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
 9. After an interactive fresh publication, offers to move the verified recovery mirror to Trash when you explicitly accept the replacement
 10. Prints a compact summary showing whether each selected template was unchanged, created, updated, replaced, or cancelled
 
 If a generated tree already matches its existing template repository, the publisher normally does not ask for a message or confirmation and does not create a commit or push. Explicit `--history fresh` is the exception because replacing maintainer history is itself the requested publication.
+
+Explicit fresh mode is preflighted before tests and generation. If any selected template has a retained recovery mirror, the command stops immediately.
 
 ## First publication
 
@@ -69,8 +71,10 @@ Append uses a normal push and reports the template as `updated`.
 Choose `fresh` at the interactive prompt or pass it explicitly:
 
 ```bash
-npm run template:publish -- openai --history fresh --message "Initial commit"
+npm run template:publish -- openai --history fresh
 ```
+
+Fresh mode defaults to `Initial commit`; pass `--message` only when you want a different root-commit message.
 
 Before changing any ref, the publisher creates a bare mirror of the existing repository and verifies that the mirror contains the exact `main` commit observed during comparison. It stores the mirror under `TEMPLATE_PUBLISH_BACKUP_DIR` when that variable is set, otherwise under `${XDG_STATE_HOME:-$HOME/.local/state}/d1-r2-starter/template-publish-backups`. The summary prints the exact retained path.
 
@@ -106,7 +110,7 @@ Passing `--history fresh` also replaces history when the generated files are unc
 
 ## Commit messages
 
-If a planned publication needs a commit and you did not pass `--message`, the publisher asks for a commit message after showing the diff and choosing the history mode.
+Creating a repository and replacing one with `fresh` both default to the root-commit message `Initial commit`. An append publication has no default that can describe its changes, so the publisher asks for its message after showing the diff when `--message` was not supplied.
 
 Without a variant, one supplied message is used for every changed template selected by the run:
 
@@ -114,14 +118,24 @@ Without a variant, one supplied message is used for every changed template selec
 npm run template:publish -- --history append --message "Refresh generated templates"
 ```
 
-Omit `--message` when the templates need different commit messages; the publisher prompts for each changed repository separately. Run the variants separately when they also need different history modes.
+For append mode, omit `--message` when the templates need different commit messages; the publisher prompts for each changed repository separately. Run the variants separately when they also need different history modes.
 
 ## Non-interactive publication
 
-Pass `--yes` to skip the history, message, and repository-name prompts. The full staged diff is still printed before the commit. An existing repository selected for publication requires explicit `--history` and `--message` values in this mode. Fresh mode retains its recovery mirror and prints the backup-management command, so acceptance remains a separate human decision. Use this only when the command invocation itself is the publication approval, such as a controlled release job:
+Pass `--yes` to disable interactive prompts and make the command invocation itself the approval to publish after every safety check passes. It supplies consent, not a history choice: an existing repository selected for publication still needs `--history`. `--message` supplies or overrides the commit message, but it is not always required. Creating a repository and replacing one with `fresh` both produce a root commit and therefore default to `Initial commit`; an `append` update has no meaningful default, so it requires `--message` under `--yes` or prompts without `--yes`.
+
+The full staged diff is still printed before any commit. `--yes` does not bypass factory checks, generated-tree guards, remote leases, backup creation, or remote verification. It also does not accept or delete a fresh-mode recovery mirror; backup acceptance remains a separate human decision after inspecting the rewritten repository.
+
+Use non-interactive mode only when the complete command is the publication approval, such as a controlled release job:
 
 ```bash
 npm run template:publish -- wrangler --history append --message "Refresh Worker dependencies" --yes
+```
+
+An explicit non-interactive fresh replacement uses the root-commit default unless `--message` overrides it:
+
+```bash
+npm run template:publish -- all --history fresh --yes
 ```
 
 ## Pre-publish checklist

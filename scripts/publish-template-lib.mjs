@@ -186,8 +186,8 @@ export function publishUsage() {
         "  all                  Process both templates explicitly; both is an alias",
         "  openai|wrangler      Limit publication to one template",
         "  --history <mode>     Append a commit or replace main with a fresh root",
-        "  --message <message>  Use one commit message for every published template",
-        "  --yes                Skip confirmations; existing repos require explicit history and message",
+        "  --message <message>  Override the commit message; root commits default to Initial commit",
+        "  --yes                Disable prompts and authorize publication; existing repos require history",
         "  --help               Show this help",
         "",
         "Environment:",
@@ -195,9 +195,15 @@ export function publishUsage() {
     ].join("\n");
 }
 
-export function resolveCommitMessage(repositoryExists, requestedMessage) {
+export function resolveCommitMessage({
+    history,
+    repositoryExists,
+    requestedMessage,
+}) {
     if (requestedMessage) return requestedMessage;
-    if (!repositoryExists) return INITIAL_COMMIT_MESSAGE;
+    if (!repositoryExists || history === HISTORY_MODES.fresh) {
+        return INITIAL_COMMIT_MESSAGE;
+    }
     throw new Error(
         "--message is required when updating an existing template repository."
     );
@@ -271,6 +277,25 @@ async function logRetainedBackups(dependencies) {
     return records;
 }
 
+function assertExplicitFreshBackupsAvailable(
+    options,
+    variants,
+    retainedBackups
+) {
+    if (options.history !== HISTORY_MODES.fresh) return;
+    const selected = new Set(variants);
+    const conflicts = retainedBackups.filter(({ variant }) =>
+        selected.has(variant)
+    );
+    if (conflicts.length === 0) return;
+
+    throw new Error([
+        "Fresh publication cannot start while selected templates have retained recovery mirrors:",
+        ...conflicts.map(({ path, variant }) => `  ${variant}: ${path}`),
+        `Review them with ${TEMPLATE_BACKUP_COMMANDS.list}. Fresh publication stopped to avoid accumulating unresolved mirrors.`,
+    ].join("\n"));
+}
+
 function logSummary(dependencies, results) {
     logPhase(dependencies, "Summary");
     const labelWidth = Math.max(
@@ -299,9 +324,17 @@ function logSummary(dependencies, results) {
     dependencies.log(published ? "Publication complete." : "Nothing published.");
 }
 
-async function commitMessageFor(plan, options, dependencies) {
-    if (options.message || !plan.exists) {
-        return resolveCommitMessage(plan.exists, options.message);
+async function commitMessageFor(plan, history, options, dependencies) {
+    if (
+        options.message
+        || !plan.exists
+        || history === HISTORY_MODES.fresh
+    ) {
+        return resolveCommitMessage({
+            history,
+            repositoryExists: plan.exists,
+            requestedMessage: options.message,
+        });
     }
     if (options.yes) {
         throw new Error(
@@ -367,6 +400,11 @@ export async function publishTemplates(options, dependencies) {
     const workspaces = [];
 
     const retainedBackups = await logRetainedBackups(dependencies);
+    assertExplicitFreshBackupsAvailable(
+        options,
+        variants,
+        retainedBackups
+    );
     logPhase(dependencies, "Verify factory", retainedBackups.length > 0);
     await dependencies.assertFactoryReady();
     dependencies.log("Factory main matches origin/main.");
@@ -472,6 +510,7 @@ export async function publishTemplates(options, dependencies) {
             await assertFreshBackupAvailable(plan, history, dependencies);
             const commitMessage = await commitMessageFor(
                 plan,
+                history,
                 options,
                 dependencies
             );
