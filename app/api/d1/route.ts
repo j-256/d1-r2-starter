@@ -1,4 +1,4 @@
-import { createTextStoreRoute } from "../_shared/text-store-route";
+import { createTextStoreRoute } from "../../../routes/text-store-route";
 
 export const dynamic = "force-dynamic";
 

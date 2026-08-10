@@ -1,8 +1,8 @@
-import { getAuthorizer, getStorageService } from "../../../runtime/storage-context.ts";
+import { getAuthorizer, getStorageService } from "../runtime/storage-context.ts";
 import {
     STORAGE_LIMITS,
     type StorageKind,
-} from "../../../storage/contracts.ts";
+} from "../storage/contracts.ts";
 
 type ValidationResult<T> =
     | { ok: true; value: T }

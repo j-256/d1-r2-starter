@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createTextStoreRoute } from "../app/api/_shared/text-store-route.ts";
+import { createTextStoreRoute } from "../routes/text-store-route.ts";
 import { runWithRequestContext } from "../runtime/storage-context.ts";
 import type { Authorizer } from "../storage/authorizer.ts";
 import type {
