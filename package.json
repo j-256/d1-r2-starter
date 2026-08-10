@@ -3,6 +3,7 @@
   "displayName": "Starter",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "engines": {
     "node": ">=22.13.0"
   },
@@ -16,7 +17,9 @@
     "validate:artifact": "bash scripts/validate-artifact.sh",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "bash scripts/sites-env.sh -- tsc --noEmit",
-    "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
+    "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate",
+    "generate": "node scripts/generate.mjs",
+    "test:generate": "node --test scripts/generate.test.mjs"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
