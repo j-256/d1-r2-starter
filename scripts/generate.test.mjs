@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+    copyGeneratedPath,
     scanForResidue,
     scanOpenaiResidue,
     RESIDUE_PATTERN,
@@ -21,6 +28,26 @@ test("scanForResidue passes a clean tree", () => {
         mkdirSync(join(root, "sub"));
         writeFileSync(join(root, "sub", "note.md"), "A Hono worker.\n");
         assert.deepEqual(scanForResidue(root), []);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("copyGeneratedPath excludes nested Git and macOS metadata", () => {
+    const root = tempTree();
+    try {
+        const source = join(root, "source");
+        const target = join(root, "target");
+        mkdirSync(join(source, "nested", ".git"), { recursive: true });
+        writeFileSync(join(source, "nested", ".DS_Store"), "metadata\n");
+        writeFileSync(join(source, "nested", ".git", "config"), "private\n");
+        writeFileSync(join(source, "nested", "keep.txt"), "public\n");
+
+        copyGeneratedPath(source, target);
+
+        assert.equal(existsSync(join(target, "nested", ".DS_Store")), false);
+        assert.equal(existsSync(join(target, "nested", ".git")), false);
+        assert.equal(existsSync(join(target, "nested", "keep.txt")), true);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

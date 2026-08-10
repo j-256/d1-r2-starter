@@ -19,7 +19,8 @@
     "typecheck": "bash scripts/sites-env.sh -- tsc --noEmit",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate",
     "generate": "node scripts/generate.mjs",
-    "test:generate": "node --test scripts/generate.test.mjs"
+    "test:generate": "node --test scripts/generate.test.mjs scripts/publish-template.test.mjs",
+    "template:publish": "node scripts/publish-template.mjs"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
