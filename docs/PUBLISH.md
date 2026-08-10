@@ -10,6 +10,12 @@ From a clean `main` branch, run the publisher without a variant to process both 
 npm run template:publish
 ```
 
+Use `all` when you want the command to state that choice explicitly. `both` is accepted as an alias:
+
+```bash
+npm run template:publish -- all
+```
+
 Pass `openai` or `wrangler` when you want to limit the run to one template:
 
 ```bash

@@ -201,6 +201,11 @@ test("parsePublishArguments accepts a variant, history, message, and confirmatio
     );
 });
 
+test("parsePublishArguments accepts explicit all and both selections", () => {
+    assert.equal(parsePublishArguments(["all"]).variant, "all");
+    assert.equal(parsePublishArguments(["both"]).variant, "all");
+});
+
 test("parsePublishArguments rejects unknown variants and malformed options", () => {
     assert.throws(
         () => parsePublishArguments(["other"]),
@@ -218,6 +223,8 @@ test("parsePublishArguments rejects unknown variants and malformed options", () 
 
 test("publishUsage documents history modes and persistent backups", () => {
     const usage = publishUsage();
+    assert.match(usage, /all\|openai\|wrangler/);
+    assert.match(usage, /both is an alias/);
     assert.match(usage, /--history append\|fresh/);
     assert.match(usage, /TEMPLATE_PUBLISH_BACKUP_DIR/);
 });
@@ -541,6 +548,23 @@ test("publishTemplates compares both variants before publishing and runs setup o
     );
     assert.equal(fake.operations.includes("log:openai    updated"), true);
     assert.equal(fake.operations.includes("log:wrangler  updated"), true);
+});
+
+test("publishTemplates processes both variants for an explicit all selection", async () => {
+    const fake = fakeDependencies({ changedPaths: [], exists: true });
+    const results = await publishTemplates(
+        {
+            help: false,
+            variant: "all",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.deepEqual(
+        results.map(({ variant }) => variant),
+        ["openai", "wrangler"]
+    );
 });
 
 test("publishTemplates reports unchanged variants without staging", async () => {

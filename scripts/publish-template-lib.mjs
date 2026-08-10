@@ -25,6 +25,8 @@ export { TEMPLATE_VARIANTS };
 
 const DEFAULT_BRANCH = "main";
 const FACTORY_REMOTE = "origin";
+const ALL_VARIANTS = "all";
+const BOTH_VARIANTS_ALIAS = "both";
 const HISTORY_MODES = Object.freeze({
     append: "append",
     fresh: "fresh",
@@ -147,9 +149,14 @@ export function parsePublishArguments(args) {
     }
 
     if (help) return { help: true, yes };
-    if (variant !== undefined && !(variant in TEMPLATE_VARIANTS)) {
+    if (variant === BOTH_VARIANTS_ALIAS) variant = ALL_VARIANTS;
+    if (
+        variant !== undefined
+        && variant !== ALL_VARIANTS
+        && !(variant in TEMPLATE_VARIANTS)
+    ) {
         throw new Error(
-            `Unknown template variant: ${variant}. Choose openai or wrangler.`
+            `Unknown template variant: ${variant}. Choose all, openai, or wrangler.`
         );
     }
     if (history !== undefined && !Object.hasOwn(HISTORY_MODES, history)) {
@@ -173,10 +180,11 @@ export function parsePublishArguments(args) {
 export function publishUsage() {
     return [
         "Usage:",
-        "  npm run template:publish -- [openai|wrangler] [--history append|fresh] [--message <message>] [--yes]",
+        "  npm run template:publish -- [all|openai|wrangler] [--history append|fresh] [--message <message>] [--yes]",
         "",
         "Options:",
-        "  openai|wrangler      Limit publication to one template; omit for both",
+        "  all                  Process both templates explicitly; both is an alias",
+        "  openai|wrangler      Limit publication to one template",
         "  --history <mode>     Append a commit or replace main with a fresh root",
         "  --message <message>  Use one commit message for every published template",
         "  --yes                Skip confirmations; existing repos require explicit history and message",
@@ -232,7 +240,9 @@ export function mergeChangedPaths(trackedOutput, untrackedOutput) {
 }
 
 function selectedVariants(variant) {
-    return variant ? [variant] : Object.keys(TEMPLATE_VARIANTS);
+    return !variant || variant === ALL_VARIANTS
+        ? Object.keys(TEMPLATE_VARIANTS)
+        : [variant];
 }
 
 function logPhase(dependencies, title, leadingBlank = true) {
