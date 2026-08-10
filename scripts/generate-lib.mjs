@@ -1,5 +1,6 @@
 import {
     cpSync,
+    existsSync,
     mkdirSync,
     readdirSync,
     readFileSync,
@@ -45,6 +46,19 @@ export const OPENAI_DROP_SCRIPTS = [
     "generate-lib.mjs",
     "generate.test.mjs",
 ];
+
+// Factory-only files that live at non-dropped root paths and so survive the
+// copy-root, but must not ship in the openai template. Repo-relative POSIX
+// paths, scrubbed after the copy in emitOpenai. docs/PUBLISH.md is the
+// maintainer publish runbook: it describes this repo as the private factory
+// and references the sibling wrangler variant, so it is not template content
+export const OPENAI_DROP_FILES = ["docs/PUBLISH.md"];
+
+// package.json script keys that drive the factory only. They reference the
+// dropped generator files, so leaving them in the emitted openai package.json
+// yields commands that fail with module-not-found. db:generate is unrelated
+// (drizzle) and is intentionally NOT listed
+export const OPENAI_DROP_SCRIPT_KEYS = ["generate", "test:generate"];
 
 // Forbidden tokens for the WRANGLER tree (contents and paths), case-insensitive
 export const RESIDUE_PATTERN = /oai-|\.openai|chatgpt|siwc|vinext|codex-preview/i;
@@ -135,11 +149,68 @@ export function emitOpenai(repoRoot, outDir) {
         rmSync(join(scriptsDir, name), { force: true });
     }
 
+    // Drop factory-only files that survive the copy-root at non-dropped paths,
+    // and remove a parent directory the drop leaves empty (e.g. a bare docs/)
+    for (const relPath of OPENAI_DROP_FILES) {
+        const segments = relPath.split("/");
+        rmSync(join(outDir, ...segments), { force: true });
+        if (segments.length > 1) {
+            const parent = join(outDir, ...segments.slice(0, -1));
+            if (existsSync(parent) && readdirSync(parent).length === 0) {
+                rmSync(parent, { recursive: true, force: true });
+            }
+        }
+    }
+
+    // Strip factory-only script keys from the emitted package.json so no
+    // command references a dropped generator file
+    const packagePath = join(outDir, "package.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    if (pkg.scripts) {
+        for (const key of OPENAI_DROP_SCRIPT_KEYS) delete pkg.scripts[key];
+    }
+    writeFileSync(packagePath, JSON.stringify(pkg, null, 2) + "\n");
+
     // Placeholder the real project_id in the emitted hosting.json only
     const hostingPath = join(outDir, ".openai", "hosting.json");
     const hosting = JSON.parse(readFileSync(hostingPath, "utf8"));
     hosting.project_id = "REPLACE_WITH_YOUR_SITES_PROJECT_ID";
     writeFileSync(hostingPath, JSON.stringify(hosting, null, 2) + "\n");
+}
+
+/**
+ * Scans an emitted openai tree for factory-only residue that the copy-root
+ * subtraction can miss. Returns "relpath: reason" strings; empty means clean.
+ * Symmetric with scanForResidue (wrangler) so the openai emit also fails loud
+ * instead of shipping factory tooling into a template that goes public
+ */
+export function scanOpenaiResidue(root) {
+    const violations = [];
+
+    for (const relPath of OPENAI_DROP_FILES) {
+        if (existsSync(join(root, ...relPath.split("/")))) {
+            violations.push(`${relPath}: factory-only file must not ship`);
+        }
+    }
+
+    for (const name of OPENAI_DROP_SCRIPTS) {
+        if (existsSync(join(root, "scripts", name))) {
+            violations.push(`scripts/${name}: generator file must not ship`);
+        }
+    }
+
+    const packagePath = join(root, "package.json");
+    if (existsSync(packagePath)) {
+        const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+        const scripts = pkg.scripts ?? {};
+        for (const key of OPENAI_DROP_SCRIPT_KEYS) {
+            if (key in scripts) {
+                violations.push(`package.json: factory-only script "${key}"`);
+            }
+        }
+    }
+
+    return violations;
 }
 
 /** Emits the wrangler tree: shared set + the wrangler overlay at root */
