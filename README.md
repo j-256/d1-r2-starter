@@ -1,11 +1,11 @@
 # Cloudflare D1 + R2 starter (OpenAI Sites)
 
-A D1 (SQL) and R2 (object storage) control plane that deploys on OpenAI Sites (which runs on Cloudflare), with the parts that are easy to get wrong already done right: explicit auth with no allow-all default, migration-owned schema, and a storage core you can point at a different database or object store without rewriting your API. Written in strict TypeScript on [Vinext](https://github.com/cloudflare/vinext).
+A D1 (SQL) and R2 (object storage) control plane that deploys on OpenAI Sites (which runs on Cloudflare), with the parts that are easy to get wrong already handled: a migration-owned schema that can't drift from the code, and a storage core you can point at a different database or object store without rewriting your API. Access is delegated to the Sites access policy in front of the Worker, so this variant is safe only while the Site is access-controlled (see [Authorization](#authorization)). Written in strict TypeScript on [Vinext](https://github.com/cloudflare/vinext).
 
 ## Why start here
 
 - **Swappable storage core.** Your routes talk to one provider-neutral `TextStore` contract, never to D1 or R2 directly. Swap adapters at a single seam (`storage/create-services.ts`) to target another SQLite-compatible database or object store, and the API and UI stay the same.
-- **Auth is always explicit.** The core ships no allow-all default: the composition root must supply a concrete `Authorizer`, so the auth decision is never implicit. This hosted variant trusts the Sites access policy via `platformTrustAuthorizer`; a self-hosted deployment swaps in a real check at the same seam.
+- **One explicit auth seam.** Every request passes an injected `Authorizer` before touching storage. This hosted variant injects `platformTrustAuthorizer`, which allows every request that reaches the Worker and delegates the real gate to the Sites access policy in front of it. That is safe only while the Site is access-controlled: making the Site public exposes the storage API. Harden by replacing the authorizer at that one seam (see [Authorization](#authorization)).
 - **Schema truth lives in migrations.** Drizzle owns the schema; the adapters never `CREATE TABLE` at runtime, so the database can't drift from the code. A worked migration (`0001`) shows how to evolve it with a backwards-compatible column.
 - **Tests run with zero install.** The core suite is buildless: no `node_modules`, no build step, so you can verify the storage contract before you deploy anything.
 
@@ -59,14 +59,26 @@ it to the hosted OpenAI Sites platform.
 ## Authorization
 
 Every storage route calls an injected `Authorizer` (`storage/authorizer.ts`)
-before touching D1 or R2. The core ships no allow-all default: the composition
-root must supply a concrete authorizer, so the auth decision is always explicit.
+before touching D1 or R2. The provider-neutral core ships no default authorizer;
+the composition root must supply one, so the decision is made in exactly one
+place per variant.
 
-This hosted variant injects `platformTrustAuthorizer` in `worker/index.ts`,
-which trusts the Sites access policy in front of the Worker and allows every
-request that reaches it. A self-hosted deployment MUST replace this with a real
-check (for example a shared-secret or bearer-token authorizer reading from an
-env binding) before exposing the routes.
+This hosted variant injects `platformTrustAuthorizer` in `worker/index.ts`. It
+returns `{ ok: true }` for every request and delegates the actual access
+decision to the Sites access policy in front of the Worker.
+
+> **Invariant: keep the Site access-controlled.** `platformTrustAuthorizer` is
+> an allow-all authorizer at the application layer. It is safe only because the
+> Sites access policy gates who reaches the Worker. If you set the Site to
+> public, this variant becomes an open D1/R2 API: anyone can list, read, write,
+> and delete stored data. Sign in with ChatGPT does not fix this on its own,
+> because it establishes identity, not workspace membership or an allowlist.
+
+To make the variant safe on a public Site, replace `platformTrustAuthorizer`
+with a fail-closed check at the same seam (for example an authorizer that reads
+`oai-authenticated-user-email` and checks it against an allowlist, denying when
+the header is absent). The self-hosted Wrangler variant does exactly this with a
+shared-secret authorizer.
 
 ## D1 migrations
 
