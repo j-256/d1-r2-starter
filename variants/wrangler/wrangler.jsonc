@@ -2,8 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "d1-r2-starter",
   "main": "src/worker.ts",
-  // Set to the date this template was generated; bump when adopting new runtime features.
-  "compatibility_date": "2026-08-10",
+  // Pin to a date the installed Workers runtime supports; bump when adopting new runtime features.
+  "compatibility_date": "2026-08-01",
   // nodejs_compat is required: runtime/storage-context.ts uses node:async_hooks.
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
