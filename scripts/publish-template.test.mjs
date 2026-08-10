@@ -17,6 +17,7 @@ import {
     parseHttpStatus,
     parsePublishArguments,
     publishTemplates,
+    publishUsage,
     resolveCommitMessage,
     syncGeneratedTree,
 } from "./publish-template-lib.mjs";
@@ -32,6 +33,29 @@ function tempTree() {
 
 function runGit(cwd, args) {
     return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+}
+
+function configureTestGit(cwd) {
+    runGit(cwd, ["config", "user.name", "Template Test"]);
+    runGit(cwd, ["config", "user.email", "template@example.test"]);
+}
+
+function createTemplateRemote(root) {
+    const remote = join(root, "template.git");
+    const seed = join(root, "seed");
+    execFileSync("git", ["init", "--bare", remote]);
+    execFileSync("git", ["init", "-b", "main", seed]);
+    configureTestGit(seed);
+    writeFileSync(join(seed, "README.md"), "# Initial\n");
+    writeFileSync(join(seed, "stale.txt"), "remove\n");
+    runGit(seed, ["add", "--", "README.md", "stale.txt"]);
+    runGit(seed, ["commit", "-m", "Initial commit", "--", "README.md", "stale.txt"]);
+    runGit(seed, ["remote", "add", "origin", remote]);
+    runGit(seed, ["push", "--quiet", "origin", "main"]);
+    return {
+        initialCommit: runGit(seed, ["rev-parse", "HEAD"]).trim(),
+        remote,
+    };
 }
 
 function fakeDependencies(options = {}) {
@@ -55,6 +79,9 @@ function fakeDependencies(options = {}) {
                 operations.push(`prepareCheckout:${config.repository}`);
                 return {
                     checkout: config.repository,
+                    remoteCommit: options.remoteCommitByRepository?.[
+                        config.repository
+                    ] ?? `remote-${config.repository}`,
                     tempRoot: `temp:${config.repository}`,
                 };
             },
@@ -72,11 +99,17 @@ function fakeDependencies(options = {}) {
             async showStagedDiff(checkout) {
                 operations.push(`showStagedDiff:${checkout}`);
             },
-            async confirm({ repository }) {
-                operations.push(`confirm:${repository}`);
+            async confirm({ history, repository }) {
+                operations.push(`confirm:${repository}:${history ?? "create"}`);
                 return options.confirmedByRepository?.[repository]
                     ?? options.confirmed
                     ?? true;
+            },
+            async requestHistoryMode({ repository }) {
+                operations.push(`requestHistoryMode:${repository}`);
+                return options.historyByRepository?.[repository]
+                    ?? options.requestedHistory
+                    ?? "append";
             },
             async requestCommitMessage({ repository }) {
                 operations.push(`requestCommitMessage:${repository}`);
@@ -84,14 +117,26 @@ function fakeDependencies(options = {}) {
                     ?? options.requestedMessage
                     ?? UPDATE_MESSAGE;
             },
-            async commitPaths(checkout, paths, message) {
+            async createMirrorBackup({ repository }) {
+                operations.push(`createMirrorBackup:${repository}`);
+                return `backup:${repository}`;
+            },
+            async createCommit({
+                changedPaths,
+                checkout,
+                history,
+                message,
+            }) {
                 operations.push(
-                    `commit:${checkout}:${message}:${paths.join(",")}`
+                    `commit:${checkout}:${history ?? "create"}:${message}:${changedPaths.join(",")}`
                 );
                 return `published-${checkout}`;
             },
             async pushUpdate(checkout) {
                 operations.push(`pushUpdate:${checkout}`);
+            },
+            async pushFresh({ checkout }) {
+                operations.push(`pushFresh:${checkout}`);
             },
             async createRepository(_checkout, repository) {
                 operations.push(`createRepository:${repository}`);
@@ -116,22 +161,25 @@ function fakeDependencies(options = {}) {
 test("parsePublishArguments defaults to both templates", () => {
     assert.deepEqual(parsePublishArguments([]), {
         help: false,
+        history: undefined,
         message: undefined,
         variant: undefined,
         yes: false,
     });
 });
 
-test("parsePublishArguments accepts a variant, message, and confirmation flag", () => {
+test("parsePublishArguments accepts a variant, history, message, and confirmation flag", () => {
     assert.deepEqual(
         parsePublishArguments([
             "openai",
+            "--history=fresh",
             "--message",
             UPDATE_MESSAGE,
             "--yes",
         ]),
         {
             help: false,
+            history: "fresh",
             message: UPDATE_MESSAGE,
             variant: "openai",
             yes: true,
@@ -148,6 +196,16 @@ test("parsePublishArguments rejects unknown variants and malformed options", () 
         () => parsePublishArguments(["openai", "--message", "--yes"]),
         /--message requires a value/
     );
+    assert.throws(
+        () => parsePublishArguments(["--history", "rewrite"]),
+        /Unknown history mode/
+    );
+});
+
+test("publishUsage documents history modes and persistent backups", () => {
+    const usage = publishUsage();
+    assert.match(usage, /--history append\|fresh/);
+    assert.match(usage, /TEMPLATE_PUBLISH_BACKUP_DIR/);
 });
 
 test("resolveCommitMessage defaults only for initial publication", () => {
@@ -227,11 +285,12 @@ test("system dependencies stage and commit explicit generated paths", async () =
         assert.deepEqual(paths, [".gitignore", "README.md"]);
 
         await dependencies.stagePaths(workspace.checkout, paths);
-        const commit = await dependencies.commitPaths(
-            workspace.checkout,
-            paths,
-            "Initial commit"
-        );
+        const commit = await dependencies.createCommit({
+            changedPaths: paths,
+            checkout: workspace.checkout,
+            history: undefined,
+            message: "Initial commit",
+        });
         assert.match(commit, /^[0-9a-f]{40,64}$/);
         assert.equal(
             runGit(workspace.checkout, ["status", "--porcelain=v1"]),
@@ -239,6 +298,131 @@ test("system dependencies stage and commit explicit generated paths", async () =
         );
     } finally {
         if (workspace) await dependencies.cleanup(workspace);
+        rmSync(root, { force: true, recursive: true });
+    }
+});
+
+test("system dependencies replace main with a backed-up parentless commit", async () => {
+    const root = tempTree();
+    try {
+        const { initialCommit, remote } = createTemplateRemote(root);
+        const checkout = join(root, "checkout");
+        const backupRoot = join(root, "backups");
+        execFileSync("git", [
+            "clone",
+            "--quiet",
+            "--branch",
+            "main",
+            remote,
+            checkout,
+        ]);
+        configureTestGit(checkout);
+        writeFileSync(join(checkout, "README.md"), "# Fresh\n");
+        writeFileSync(join(checkout, "fresh.txt"), "new\n");
+        rmSync(join(checkout, "stale.txt"));
+
+        const dependencies = createSystemDependencies(root);
+        const changedPaths = await dependencies.collectChangedPaths(checkout);
+        assert.deepEqual(changedPaths, [
+            "README.md",
+            "fresh.txt",
+            "stale.txt",
+        ]);
+        await dependencies.stagePaths(checkout, changedPaths);
+        const backup = await dependencies.createMirrorBackup({
+            backupRoot,
+            expectedCommit: initialCommit,
+            repository: "local/template",
+            url: remote,
+        });
+        const commit = await dependencies.createCommit({
+            changedPaths,
+            checkout,
+            expectedCommit: initialCommit,
+            history: "fresh",
+            message: "Fresh template",
+        });
+
+        assert.equal(existsSync(backup), true);
+        assert.equal(
+            runGit(backup, ["rev-parse", "refs/heads/main"]).trim(),
+            initialCommit
+        );
+        assert.equal(
+            runGit(checkout, ["rev-list", "--parents", "-n", "1", commit]).trim(),
+            commit
+        );
+        assert.equal(
+            runGit(checkout, ["ls-tree", "-r", "--name-only", commit]),
+            "README.md\nfresh.txt\n"
+        );
+        await dependencies.pushFresh({
+            checkout,
+            commit,
+            expectedCommit: initialCommit,
+        });
+        assert.equal(
+            runGit(remote, ["rev-parse", "refs/heads/main"]).trim(),
+            commit
+        );
+        assert.equal(existsSync(backup), true);
+    } finally {
+        rmSync(root, { force: true, recursive: true });
+    }
+});
+
+test("fresh publication lease rejects a remote that moved after backup", async () => {
+    const root = tempTree();
+    try {
+        const { initialCommit, remote } = createTemplateRemote(root);
+        const checkout = join(root, "checkout");
+        const rival = join(root, "rival");
+        execFileSync("git", ["clone", "--quiet", "--branch", "main", remote, checkout]);
+        execFileSync("git", ["clone", "--quiet", "--branch", "main", remote, rival]);
+        configureTestGit(checkout);
+        configureTestGit(rival);
+
+        writeFileSync(join(checkout, "README.md"), "# Fresh\n");
+        const dependencies = createSystemDependencies(root);
+        const changedPaths = await dependencies.collectChangedPaths(checkout);
+        await dependencies.stagePaths(checkout, changedPaths);
+        const backup = await dependencies.createMirrorBackup({
+            backupRoot: join(root, "backups"),
+            expectedCommit: initialCommit,
+            repository: "local/template",
+            url: remote,
+        });
+        const commit = await dependencies.createCommit({
+            changedPaths,
+            checkout,
+            expectedCommit: initialCommit,
+            history: "fresh",
+            message: "Fresh template",
+        });
+
+        writeFileSync(join(rival, "rival.txt"), "rival\n");
+        runGit(rival, ["add", "--", "rival.txt"]);
+        runGit(rival, ["commit", "-m", "Concurrent update", "--", "rival.txt"]);
+        runGit(rival, ["push", "--quiet", "origin", "main"]);
+        const rivalCommit = runGit(rival, ["rev-parse", "HEAD"]).trim();
+
+        await assert.rejects(
+            dependencies.pushFresh({
+                checkout,
+                commit,
+                expectedCommit: initialCommit,
+            }),
+            /force-with-lease/
+        );
+        assert.equal(
+            runGit(remote, ["rev-parse", "refs/heads/main"]).trim(),
+            rivalCommit
+        );
+        assert.equal(
+            runGit(backup, ["rev-parse", "refs/heads/main"]).trim(),
+            initialCommit
+        );
+    } finally {
         rmSync(root, { force: true, recursive: true });
     }
 });
@@ -289,6 +473,7 @@ test("publishTemplates compares both variants before publishing and runs setup o
     const results = await publishTemplates(
         {
             help: false,
+            history: "append",
             message: UPDATE_MESSAGE,
             yes: true,
         },
@@ -321,13 +506,13 @@ test("publishTemplates compares both variants before publishing and runs setup o
     );
     assert.equal(
         fake.operations.includes(
-            `commit:${OPENAI_REPOSITORY}:${UPDATE_MESSAGE}:README.md`
+            `commit:${OPENAI_REPOSITORY}:append:${UPDATE_MESSAGE}:README.md`
         ),
         true
     );
     assert.equal(
         fake.operations.includes(
-            `commit:${WRANGLER_REPOSITORY}:${UPDATE_MESSAGE}:README.md`
+            `commit:${WRANGLER_REPOSITORY}:append:${UPDATE_MESSAGE}:README.md`
         ),
         true
     );
@@ -380,7 +565,7 @@ test("publishTemplates creates a missing repository", async () => {
     );
     assert.equal(
         fake.operations.includes(
-            `commit:${OPENAI_REPOSITORY}:Initial commit:README.md`
+            `commit:${OPENAI_REPOSITORY}:create:Initial commit:README.md`
         ),
         true
     );
@@ -391,6 +576,7 @@ test("publishTemplates updates an existing repository with a normal push", async
     const [result] = await publishTemplates(
         {
             help: false,
+            history: "append",
             message: UPDATE_MESSAGE,
             variant: "wrangler",
             yes: true,
@@ -412,8 +598,93 @@ test("publishTemplates updates an existing repository with a normal push", async
     );
     assert.equal(
         fake.operations.includes(
-            `commit:${WRANGLER_REPOSITORY}:${UPDATE_MESSAGE}:README.md`
+            `commit:${WRANGLER_REPOSITORY}:append:${UPDATE_MESSAGE}:README.md`
         ),
+        true
+    );
+});
+
+test("publishTemplates replaces existing history only after creating a mirror", async () => {
+    const fake = fakeDependencies({ exists: true });
+    const [result] = await publishTemplates(
+        {
+            help: false,
+            history: "fresh",
+            message: UPDATE_MESSAGE,
+            variant: "openai",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(result.action, "replace");
+    assert.equal(result.status, "replaced");
+    assert.equal(result.backup, `backup:${OPENAI_REPOSITORY}`);
+    assert.equal(
+        fake.operations.includes(
+            `commit:${OPENAI_REPOSITORY}:fresh:${UPDATE_MESSAGE}:README.md`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(`pushFresh:${OPENAI_REPOSITORY}`),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(`pushUpdate:${OPENAI_REPOSITORY}`),
+        false
+    );
+    const backup = fake.operations.indexOf(
+        `createMirrorBackup:${OPENAI_REPOSITORY}`
+    );
+    const commit = fake.operations.indexOf(
+        `commit:${OPENAI_REPOSITORY}:fresh:${UPDATE_MESSAGE}:README.md`
+    );
+    const push = fake.operations.indexOf(`pushFresh:${OPENAI_REPOSITORY}`);
+    assert.equal(backup < commit, true);
+    assert.equal(commit < push, true);
+    assert.equal(
+        fake.operations.some(
+            (operation) => operation.includes(
+                `replaced (backup: backup:${OPENAI_REPOSITORY})`
+            )
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            "log:Keep each mirror backup until the rewritten remote is verified and accepted."
+        ),
+        true
+    );
+});
+
+test("explicit fresh mode replaces history even when files are unchanged", async () => {
+    const fake = fakeDependencies({ changedPaths: [], exists: true });
+    const [result] = await publishTemplates(
+        {
+            help: false,
+            history: "fresh",
+            message: UPDATE_MESSAGE,
+            variant: "wrangler",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(result.status, "replaced");
+    assert.equal(
+        fake.operations.some((operation) => operation.startsWith("stage:")),
+        false
+    );
+    assert.equal(
+        fake.operations.includes(
+            `commit:${WRANGLER_REPOSITORY}:fresh:${UPDATE_MESSAGE}:`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(`pushFresh:${WRANGLER_REPOSITORY}`),
         true
     );
 });
@@ -433,15 +704,21 @@ test("publishTemplates prompts for an update message after showing the diff", as
     const showDiff = fake.operations.indexOf(
         `showStagedDiff:${OPENAI_REPOSITORY}`
     );
+    const requestHistory = fake.operations.indexOf(
+        `requestHistoryMode:${OPENAI_REPOSITORY}`
+    );
     const requestMessage = fake.operations.indexOf(
         `requestCommitMessage:${OPENAI_REPOSITORY}`
     );
-    const confirm = fake.operations.indexOf(`confirm:${OPENAI_REPOSITORY}`);
-    assert.equal(showDiff < requestMessage, true);
+    const confirm = fake.operations.indexOf(
+        `confirm:${OPENAI_REPOSITORY}:append`
+    );
+    assert.equal(showDiff < requestHistory, true);
+    assert.equal(requestHistory < requestMessage, true);
     assert.equal(requestMessage < confirm, true);
     assert.equal(
         fake.operations.includes(
-            `commit:${OPENAI_REPOSITORY}:${UPDATE_MESSAGE}:README.md`
+            `commit:${OPENAI_REPOSITORY}:append:${UPDATE_MESSAGE}:README.md`
         ),
         true
     );
@@ -453,6 +730,7 @@ test("publishTemplates requires a message for a changed update with --yes", asyn
         publishTemplates(
             {
                 help: false,
+                history: "append",
                 variant: "openai",
                 yes: true,
             },
@@ -474,8 +752,32 @@ test("publishTemplates requires a message for a changed update with --yes", asyn
     );
 });
 
+test("publishTemplates requires an explicit history mode with --yes", async () => {
+    const fake = fakeDependencies({ exists: true });
+    await assert.rejects(
+        publishTemplates(
+            {
+                help: false,
+                message: UPDATE_MESSAGE,
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /--history is required/
+    );
+    assert.equal(
+        fake.operations.some((operation) => operation.startsWith("commit:")),
+        false
+    );
+});
+
 test("publishTemplates cancels before committing or publishing", async () => {
-    const fake = fakeDependencies({ confirmed: false, exists: true });
+    const fake = fakeDependencies({
+        confirmed: false,
+        exists: true,
+        requestedHistory: "fresh",
+    });
     const [result] = await publishTemplates(
         {
             help: false,
@@ -487,13 +789,20 @@ test("publishTemplates cancels before committing or publishing", async () => {
     );
 
     assert.equal(result.status, "cancelled");
+    assert.equal(result.action, "replace");
+    assert.equal(
+        fake.operations.some(
+            (operation) => operation.startsWith("createMirrorBackup:")
+        ),
+        false
+    );
     assert.equal(
         fake.operations.some((operation) => operation.startsWith("commit:")),
         false
     );
     assert.equal(
         fake.operations.some(
-            (operation) => operation.startsWith("pushUpdate:")
+            (operation) => operation.startsWith("push")
         ),
         false
     );

@@ -21,12 +21,13 @@ The publisher performs the following work in clearly labeled phases:
 1. Confirms that the factory worktree is clean and that `HEAD` matches `origin/main`
 2. Runs the factory tooling tests and generates both templates once, even when both repositories are selected
 3. Compares every selected generated tree with its GitHub template repository in a disposable checkout
-4. Shows the complete staged diff only for templates that changed
-5. Prompts for an update commit message when none was supplied, then asks you to type the repository name before continuing
-6. Commits the exact changed paths, publishes `main`, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
-7. Prints a compact summary showing whether each selected template was unchanged, created, updated, or cancelled
+4. Shows the complete staged diff for every planned publication
+5. For each changed existing repository, asks whether to append a normal commit or replace `main` with a fresh root commit when `--history` was not supplied
+6. Prompts for a commit message when none was supplied, then asks you to type the required confirmation before continuing
+7. Publishes `main`, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
+8. Prints a compact summary showing whether each selected template was unchanged, created, updated, replaced, or cancelled
 
-If a generated tree already matches its existing template repository, the publisher does not ask for a message or confirmation and does not create a commit or push.
+If a generated tree already matches its existing template repository, the publisher normally does not ask for a message or confirmation and does not create a commit or push. Explicit `--history fresh` is the exception because replacing maintainer history is itself the requested publication.
 
 ## First publication
 
@@ -36,32 +37,59 @@ When a selected GitHub repository does not exist, the publisher creates it as a 
 npm run template:publish -- openai
 ```
 
-## Updating an existing template
+## Choosing history for an existing template
 
-When a repository already exists, the publisher clones it and creates a normal update commit from the newly generated tree. It does not run `gh repo create` again and it does not rewrite published history. If the generated tree changed and you did not pass `--message`, the publisher shows the diff and asks for a commit message.
+When a repository already exists and its generated tree changed, the publisher shows the diff and asks how to record the publication:
 
-You can provide the message in the command instead:
+1. `append` (recommended) adds a normal commit to the template repository's maintainer history. It preserves an audit trail and makes rollback straightforward.
+2. `fresh` replaces `main` with one new root commit containing the complete generated tree. It force-pushes with a lease and rewrites the template repository's maintainer history.
+
+The publisher does not auto-squash commits. An append publication remains a normal child commit in the template repository. GitHub's separate template-generation behavior still gives a new downstream repository created with "Use this template" a single initial commit, regardless of how many maintainer commits the template repository has. See [Creating a repository from a template](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template).
+
+### Append a normal update
+
+Choose `append` at the interactive prompt or pass it explicitly:
 
 ```bash
-npm run template:publish -- openai --message "Add portable authorization boundary"
+npm run template:publish -- openai --history append --message "Add portable authorization boundary"
 ```
+
+Append uses a normal push and reports the template as `updated`.
+
+### Replace history with a fresh root
+
+Choose `fresh` at the interactive prompt or pass it explicitly:
+
+```bash
+npm run template:publish -- openai --history fresh --message "Initial commit"
+```
+
+Before changing any ref, the publisher creates a bare mirror of the existing repository and verifies that the mirror contains the exact `main` commit observed during comparison. It stores the mirror under `TEMPLATE_PUBLISH_BACKUP_DIR` when that variable is set, otherwise under `${XDG_STATE_HOME:-~/.local/state}/d1-r2-starter/template-publish-backups`. The summary prints the exact retained path.
+
+Fresh mode creates a parentless commit, then pushes with `--force-with-lease` pinned to the previously observed remote commit. If another publication moves `main` first, the push fails without overwriting it. Interactive confirmation requires typing the repository name followed by `fresh`, e.g. `j-256/d1-r2-starter-openai fresh`.
+
+The publisher never deletes a mirror backup. Keep it until the rewritten repository has been verified and you are satisfied with the result, then remove it manually. If restoration is needed, use the retained mirror to inspect and deliberately restore the previous refs.
+
+Passing `--history fresh` also replaces history when the generated files are unchanged. This is useful when the only intended change is collapsing the template repository's maintainer history to a new root. An interactive run without `--history` continues to skip unchanged repositories.
+
+## Commit messages
+
+If a planned publication needs a commit and you did not pass `--message`, the publisher asks for a commit message after showing the diff and choosing the history mode.
 
 Without a variant, one supplied message is used for every changed template selected by the run:
 
 ```bash
-npm run template:publish -- --message "Refresh generated templates"
+npm run template:publish -- --history append --message "Refresh generated templates"
 ```
 
-Omit `--message` when the templates need different commit messages; the publisher prompts for each changed repository separately.
-
-The template repository retains its maintainer history. Repositories created from a GitHub template still start with a single commit, so preserving that history does not add factory commits to downstream projects. See [Creating a repository from a template](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template).
+Omit `--message` when the templates need different commit messages; the publisher prompts for each changed repository separately. Run the variants separately when they also need different history modes.
 
 ## Non-interactive publication
 
-Pass `--yes` to skip typing each changed repository name. The full staged diff is still printed before the commit. A changed existing repository also requires `--message` in this mode because an interactive message prompt is unavailable. Use this only when the command invocation itself is the publication approval, such as a controlled release job:
+Pass `--yes` to skip the history, message, and repository-name prompts. The full staged diff is still printed before the commit. An existing repository selected for publication requires explicit `--history` and `--message` values in this mode. Use this only when the command invocation itself is the publication approval, such as a controlled release job:
 
 ```bash
-npm run template:publish -- wrangler --message "Refresh Worker dependencies" --yes
+npm run template:publish -- wrangler --history append --message "Refresh Worker dependencies" --yes
 ```
 
 ## Pre-publish checklist
@@ -73,4 +101,4 @@ npm run template:publish -- wrangler --message "Refresh Worker dependencies" --y
 - [ ] Each generated tree contains the MIT license and matching package metadata
 - [ ] The generated Wrangler tree contains no OpenAI, ChatGPT, Next.js, React, or Vinext residue
 
-The publisher enforces the clean factory state, factory tooling tests, generation gates, emitted manifest project-linkage guard, residue rules, generated tests, explicit changed-path commit, and remote verification. The runtime-specific smoke checks remain manual because they require provisioned Cloudflare or Sites environments.
+The publisher enforces the clean factory state, factory tooling tests, generation gates, emitted manifest project-linkage guard, residue rules, generated tests, explicit changed-path staging, fresh-mode mirror backup, lease-protected history replacement, and remote verification. The runtime-specific smoke checks remain manual because they require provisioned Cloudflare or Sites environments.

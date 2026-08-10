@@ -8,8 +8,8 @@ import {
     rmSync,
     statSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 
 export const TEMPLATE_VARIANTS = Object.freeze({
@@ -24,12 +24,34 @@ export const TEMPLATE_VARIANTS = Object.freeze({
 });
 
 const DEFAULT_BRANCH = "main";
+const BACKUP_DIRECTORY_ENV = "TEMPLATE_PUBLISH_BACKUP_DIR";
 const FACTORY_REMOTE = "origin";
+const HISTORY_MODES = Object.freeze({
+    append: "append",
+    fresh: "fresh",
+});
 const INITIAL_COMMIT_MESSAGE = "Initial commit";
 const NOT_FOUND_STATUS = 404;
 const PUBLISH_TEMP_PREFIX = "d1-r2-template-publish-";
+const PUBLICATION_ACTIONS = Object.freeze({
+    create: "create",
+    replace: "replace",
+    update: "update",
+});
+const PUBLICATION_STATUSES = Object.freeze({
+    cancelled: "cancelled",
+    created: "created",
+    replaced: "replaced",
+    unchanged: "unchanged",
+    updated: "updated",
+});
 const TEMPLATE_REMOTE = "origin";
-const PUBLISHED_STATUSES = new Set(["created", "updated"]);
+const XDG_STATE_HOME_ENV = "XDG_STATE_HOME";
+const PUBLISHED_STATUSES = new Set([
+    PUBLICATION_STATUSES.created,
+    PUBLICATION_STATUSES.replaced,
+    PUBLICATION_STATUSES.updated,
+]);
 
 function commandFailure(command, args, result) {
     const details = [result.stdout, result.stderr]
@@ -68,6 +90,41 @@ function repositoryUrl(repository) {
     return `https://github.com/${repository}.git`;
 }
 
+function templateBackupRoot() {
+    const configured = process.env[BACKUP_DIRECTORY_ENV]?.trim();
+    if (configured) return resolve(configured);
+
+    const configuredStateHome = process.env[XDG_STATE_HOME_ENV]?.trim();
+    const stateHome = configuredStateHome
+        ? resolve(configuredStateHome)
+        : join(homedir(), ".local", "state");
+    return join(
+        stateHome,
+        "d1-r2-starter",
+        "template-publish-backups"
+    );
+}
+
+function backupTimestamp() {
+    return new Date().toISOString()
+        .replaceAll("-", "")
+        .replaceAll(":", "")
+        .replace(/\.\d{3}Z$/, "Z");
+}
+
+function availableBackupPath(root, repository) {
+    mkdirSync(root, { recursive: true });
+    const slug = repository.replace(/[^A-Za-z0-9._-]+/g, "--");
+    const basename = `${slug}-${backupTimestamp()}`;
+    let suffix = 0;
+    let candidate = join(root, `${basename}.git`);
+    while (existsSync(candidate)) {
+        suffix += 1;
+        candidate = join(root, `${basename}-${suffix}.git`);
+    }
+    return candidate;
+}
+
 export function parseHttpStatus(output) {
     const headerMatch = output.match(/^HTTP\/\S+\s+(\d{3})\b/m);
     if (headerMatch?.[1]) return Number.parseInt(headerMatch[1], 10);
@@ -78,6 +135,7 @@ export function parseHttpStatus(output) {
 
 export function parsePublishArguments(args) {
     let help = false;
+    let history;
     let message;
     let variant;
     let yes = false;
@@ -90,6 +148,19 @@ export function parsePublishArguments(args) {
         }
         if (argument === "--yes") {
             yes = true;
+            continue;
+        }
+        if (argument === "--history") {
+            const candidate = args[index + 1];
+            if (!candidate || candidate.startsWith("-")) {
+                throw new Error("--history requires append or fresh.");
+            }
+            history = candidate;
+            index += 1;
+            continue;
+        }
+        if (argument?.startsWith("--history=")) {
+            history = argument.slice("--history=".length);
             continue;
         }
         if (argument === "--message") {
@@ -118,12 +189,18 @@ export function parsePublishArguments(args) {
             `Unknown template variant: ${variant}. Choose openai or wrangler.`
         );
     }
+    if (history !== undefined && !Object.hasOwn(HISTORY_MODES, history)) {
+        throw new Error(
+            `Unknown history mode: ${history || "empty"}. Choose append or fresh.`
+        );
+    }
     if (message !== undefined && !message.trim()) {
         throw new Error("--message cannot be empty.");
     }
 
     return {
         help: false,
+        history,
         message: message?.trim(),
         variant,
         yes,
@@ -133,13 +210,17 @@ export function parsePublishArguments(args) {
 export function publishUsage() {
     return [
         "Usage:",
-        "  npm run template:publish -- [openai|wrangler] [--message <message>] [--yes]",
+        "  npm run template:publish -- [openai|wrangler] [--history append|fresh] [--message <message>] [--yes]",
         "",
         "Options:",
         "  openai|wrangler      Limit publication to one template; omit for both",
-        "  --message <message>  Use one commit message for every changed template",
-        "  --yes                Skip confirmations; updates also require --message",
+        "  --history <mode>     Append a commit or replace main with a fresh root",
+        "  --message <message>  Use one commit message for every published template",
+        "  --yes                Skip confirmations; existing repos require explicit history and message",
         "  --help               Show this help",
+        "",
+        "Environment:",
+        "  TEMPLATE_PUBLISH_BACKUP_DIR  Override the persistent fresh-mode mirror directory",
     ].join("\n");
 }
 
@@ -202,7 +283,16 @@ function logSummary(dependencies, results) {
         ...results.map(({ variant }) => variant.length)
     ) + 2;
     for (const result of results) {
-        dependencies.log(`${result.variant.padEnd(labelWidth)}${result.status}`);
+        const backup = result.backup ? ` (backup: ${result.backup})` : "";
+        dependencies.log(
+            `${result.variant.padEnd(labelWidth)}${result.status}${backup}`
+        );
+    }
+    if (results.some(({ backup }) => backup)) {
+        dependencies.log("");
+        dependencies.log(
+            "Keep each mirror backup until the rewritten remote is verified and accepted."
+        );
     }
     dependencies.log("");
     const published = results.some(
@@ -225,6 +315,39 @@ async function commitMessageFor(plan, options, dependencies) {
     });
     if (!message.trim()) throw new Error("Commit message cannot be empty.");
     return message.trim();
+}
+
+async function historyModeFor(plan, options, dependencies) {
+    if (!plan.exists) return undefined;
+    if (options.history) return options.history;
+    if (options.yes) {
+        throw new Error(
+            `--history is required with --yes when publishing ${plan.config.repository}.`
+        );
+    }
+    const history = await dependencies.requestHistoryMode({
+        repository: plan.config.repository,
+    });
+    if (!Object.hasOwn(HISTORY_MODES, history)) {
+        throw new Error(
+            `Invalid history mode for ${plan.config.repository}: ${history}`
+        );
+    }
+    return history;
+}
+
+function publicationAction(plan, history) {
+    if (!plan.exists) return PUBLICATION_ACTIONS.create;
+    return history === HISTORY_MODES.fresh
+        ? PUBLICATION_ACTIONS.replace
+        : PUBLICATION_ACTIONS.update;
+}
+
+function publicationStatus(plan, history) {
+    if (!plan.exists) return PUBLICATION_STATUSES.created;
+    return history === HISTORY_MODES.fresh
+        ? PUBLICATION_STATUSES.replaced
+        : PUBLICATION_STATUSES.updated;
 }
 
 export async function publishTemplates(options, dependencies) {
@@ -251,6 +374,11 @@ export async function publishTemplates(options, dependencies) {
                 config,
                 exists,
             });
+            if (exists && !workspace.remoteCommit) {
+                throw new Error(
+                    `${config.repository}: temporary checkout did not capture remote main.`
+                );
+            }
             workspaces.push(workspace);
             await dependencies.syncGeneratedTree(
                 config.outputDirectory,
@@ -265,75 +393,115 @@ export async function publishTemplates(options, dependencies) {
                 );
             }
 
-            const action = exists ? "update" : "create";
+            const explicitFresh = exists
+                && options.history === HISTORY_MODES.fresh;
+            const requiresPublication = changedPaths.length > 0
+                || explicitFresh;
             const plan = {
-                action,
                 changedPaths,
                 config,
                 exists,
+                requiresPublication,
                 variant,
                 workspace,
             };
             plans.push(plan);
-            dependencies.log(
-                changedPaths.length === 0
-                    ? `${variant}: unchanged`
-                    : `${variant}: ${action} ready`
-            );
+            if (!requiresPublication) {
+                dependencies.log(`${variant}: unchanged`);
+            } else if (changedPaths.length === 0) {
+                dependencies.log(`${variant}: fresh history ready`);
+            } else if (exists) {
+                dependencies.log(`${variant}: existing repository changed`);
+            } else {
+                dependencies.log(`${variant}: create ready`);
+            }
         }
 
         const results = plans
-            .filter(({ changedPaths }) => changedPaths.length === 0)
-            .map(({ action, config, variant }) => ({
-                action,
+            .filter(({ requiresPublication }) => !requiresPublication)
+            .map(({ config, variant }) => ({
+                action: PUBLICATION_ACTIONS.update,
                 repository: config.repository,
-                status: "unchanged",
+                status: PUBLICATION_STATUSES.unchanged,
                 variant,
             }));
-        const changedPlans = plans.filter(
-            ({ changedPaths }) => changedPaths.length > 0
+        const publishPlans = plans.filter(
+            ({ requiresPublication }) => requiresPublication
         );
 
-        if (changedPlans.length > 0) {
-            logPhase(dependencies, "Publish changed templates");
+        if (publishPlans.length > 0) {
+            logPhase(dependencies, "Publish templates");
         }
-        for (const plan of changedPlans) {
+        for (const plan of publishPlans) {
             dependencies.log("");
             dependencies.log(
-                `${plan.variant}: ${plan.action} ${plan.config.repository}`
+                `${plan.variant}: publish ${plan.config.repository}`
             );
-            await dependencies.stagePaths(
-                plan.workspace.checkout,
-                plan.changedPaths
-            );
+            if (plan.changedPaths.length > 0) {
+                await dependencies.stagePaths(
+                    plan.workspace.checkout,
+                    plan.changedPaths
+                );
+            }
             await dependencies.showStagedDiff(plan.workspace.checkout);
+            if (plan.changedPaths.length === 0) {
+                dependencies.log(
+                    "Generated files are unchanged; fresh mode will replace history with the same tree."
+                );
+            }
+            const history = await historyModeFor(
+                plan,
+                options,
+                dependencies
+            );
+            const action = publicationAction(plan, history);
+            if (history) dependencies.log(`History mode: ${history}`);
             const commitMessage = await commitMessageFor(
                 plan,
                 options,
                 dependencies
             );
             const confirmed = options.yes || await dependencies.confirm({
-                action: plan.action,
+                action,
+                history,
                 repository: plan.config.repository,
             });
             if (!confirmed) {
                 dependencies.log(`${plan.variant}: cancelled`);
                 results.push({
-                    action: plan.action,
+                    action,
                     repository: plan.config.repository,
-                    status: "cancelled",
+                    status: PUBLICATION_STATUSES.cancelled,
                     variant: plan.variant,
                 });
                 continue;
             }
 
-            const commit = await dependencies.commitPaths(
-                plan.workspace.checkout,
-                plan.changedPaths,
-                commitMessage
-            );
+            let backup;
+            if (history === HISTORY_MODES.fresh) {
+                backup = await dependencies.createMirrorBackup({
+                    expectedCommit: plan.workspace.remoteCommit,
+                    repository: plan.config.repository,
+                });
+                dependencies.log(`Mirror backup retained at ${backup}`);
+            }
+            const commit = await dependencies.createCommit({
+                changedPaths: plan.changedPaths,
+                checkout: plan.workspace.checkout,
+                expectedCommit: plan.workspace.remoteCommit,
+                history,
+                message: commitMessage,
+            });
             if (plan.exists) {
-                await dependencies.pushUpdate(plan.workspace.checkout);
+                if (history === HISTORY_MODES.fresh) {
+                    await dependencies.pushFresh({
+                        checkout: plan.workspace.checkout,
+                        commit,
+                        expectedCommit: plan.workspace.remoteCommit,
+                    });
+                } else {
+                    await dependencies.pushUpdate(plan.workspace.checkout);
+                }
             } else {
                 await dependencies.createRepository(
                     plan.workspace.checkout,
@@ -346,10 +514,11 @@ export async function publishTemplates(options, dependencies) {
                 repository: plan.config.repository,
             });
 
-            const status = plan.exists ? "updated" : "created";
+            const status = publicationStatus(plan, history);
             dependencies.log(`${plan.variant}: ${status} ${commit}`);
             results.push({
-                action: plan.action,
+                action,
+                backup,
                 commit,
                 repository: plan.config.repository,
                 status,
@@ -441,6 +610,7 @@ export function createSystemDependencies(repoRoot) {
             const tempRoot = mkdtempSync(join(tmpdir(), PUBLISH_TEMP_PREFIX));
             const checkout = join(tempRoot, "checkout");
             try {
+                let remoteCommit;
                 if (exists) {
                     runCommand(
                         "git",
@@ -455,6 +625,11 @@ export function createSystemDependencies(repoRoot) {
                         ],
                         { cwd: repoRoot }
                     );
+                    remoteCommit = captured(
+                        "git",
+                        ["-C", checkout, "rev-parse", "HEAD"],
+                        { cwd: repoRoot }
+                    ).trim();
                 } else {
                     mkdirSync(checkout);
                     runCommand(
@@ -463,7 +638,7 @@ export function createSystemDependencies(repoRoot) {
                         { cwd: repoRoot }
                     );
                 }
-                return { checkout, tempRoot };
+                return { checkout, remoteCommit, tempRoot };
             } catch (error) {
                 rmSync(tempRoot, { force: true, recursive: true });
                 throw error;
@@ -521,10 +696,37 @@ export function createSystemDependencies(repoRoot) {
             );
         },
 
-        async confirm({ action, repository }) {
+        async confirm({ action, history, repository }) {
             if (!process.stdin.isTTY || !process.stdout.isTTY) {
                 throw new Error(
                     "Interactive confirmation requires a terminal. Pass --yes for an intentional non-interactive publication."
+                );
+            }
+
+            const expected = history === HISTORY_MODES.fresh
+                ? `${repository} fresh`
+                : repository;
+            const description = history === HISTORY_MODES.fresh
+                ? "replace main with a fresh root commit and force-push"
+                : `${action} and publish`;
+            const readline = createInterface({
+                input: process.stdin,
+                output: process.stdout,
+            });
+            try {
+                const answer = await readline.question(
+                    `Type ${expected} to ${description}: `
+                );
+                return answer.trim() === expected;
+            } finally {
+                readline.close();
+            }
+        },
+
+        async requestHistoryMode({ repository }) {
+            if (!process.stdin.isTTY || !process.stdout.isTTY) {
+                throw new Error(
+                    `Choosing history for ${repository} requires a terminal. Pass --history for a non-interactive publication.`
                 );
             }
 
@@ -533,10 +735,21 @@ export function createSystemDependencies(repoRoot) {
                 output: process.stdout,
             });
             try {
-                const answer = await readline.question(
-                    `Type ${repository} to ${action} and publish this template: `
-                );
-                return answer.trim() === repository;
+                console.log(`History mode for ${repository}:`);
+                console.log("  1. append (recommended): add a normal commit");
+                console.log("  2. fresh: replace main with one new root commit");
+                while (true) {
+                    const answer = (await readline.question(
+                        "Choose 1 or 2: "
+                    )).trim().toLowerCase();
+                    if (answer === "1" || answer === HISTORY_MODES.append) {
+                        return HISTORY_MODES.append;
+                    }
+                    if (answer === "2" || answer === HISTORY_MODES.fresh) {
+                        return HISTORY_MODES.fresh;
+                    }
+                    console.log("Choose 1 for append or 2 for fresh.");
+                }
             } finally {
                 readline.close();
             }
@@ -562,21 +775,108 @@ export function createSystemDependencies(repoRoot) {
             }
         },
 
-        async commitPaths(checkout, changedPaths, message) {
-            runCommand(
+        async createMirrorBackup({
+            backupRoot = templateBackupRoot(),
+            expectedCommit,
+            repository,
+            url = repositoryUrl(repository),
+        }) {
+            if (!expectedCommit) {
+                throw new Error(
+                    `Cannot back up ${repository} without the observed remote commit.`
+                );
+            }
+            const backup = availableBackupPath(backupRoot, repository);
+            try {
+                runCommand(
+                    "git",
+                    ["clone", "--mirror", "--quiet", url, backup],
+                    { cwd: repoRoot }
+                );
+            } catch (error) {
+                rmSync(backup, { force: true, recursive: true });
+                throw error;
+            }
+            const backedUpCommit = captured(
                 "git",
-                [
-                    "-C",
-                    checkout,
-                    "commit",
-                    "--quiet",
-                    "-m",
-                    message,
-                    "--",
-                    ...changedPaths,
-                ],
+                ["-C", backup, "rev-parse", `refs/heads/${DEFAULT_BRANCH}`],
                 { cwd: repoRoot }
-            );
+            ).trim();
+            if (backedUpCommit !== expectedCommit) {
+                throw new Error(
+                    `${repository} moved after comparison. Nothing was rewritten. The newer mirror is retained at ${backup}.`
+                );
+            }
+            return backup;
+        },
+
+        async createCommit({
+            changedPaths,
+            checkout,
+            expectedCommit,
+            history,
+            message,
+        }) {
+            let commit;
+            if (history === HISTORY_MODES.fresh) {
+                const currentCommit = captured(
+                    "git",
+                    ["-C", checkout, "rev-parse", "HEAD"],
+                    { cwd: repoRoot }
+                ).trim();
+                if (!expectedCommit || currentCommit !== expectedCommit) {
+                    throw new Error(
+                        "The temporary template checkout moved before the fresh commit. Nothing was pushed."
+                    );
+                }
+                const tree = captured(
+                    "git",
+                    ["-C", checkout, "write-tree"],
+                    { cwd: repoRoot }
+                ).trim();
+                commit = captured(
+                    "git",
+                    ["-C", checkout, "commit-tree", tree, "-m", message],
+                    { cwd: repoRoot }
+                ).trim();
+                runCommand(
+                    "git",
+                    [
+                        "-C",
+                        checkout,
+                        "update-ref",
+                        `refs/heads/${DEFAULT_BRANCH}`,
+                        commit,
+                        expectedCommit,
+                    ],
+                    { cwd: repoRoot }
+                );
+            } else {
+                if (changedPaths.length === 0) {
+                    throw new Error(
+                        "A normal template commit requires changed paths."
+                    );
+                }
+                runCommand(
+                    "git",
+                    [
+                        "-C",
+                        checkout,
+                        "commit",
+                        "--quiet",
+                        "-m",
+                        message,
+                        "--",
+                        ...changedPaths,
+                    ],
+                    { cwd: repoRoot }
+                );
+                commit = captured(
+                    "git",
+                    ["-C", checkout, "rev-parse", "HEAD"],
+                    { cwd: repoRoot }
+                ).trim();
+            }
             const status = captured(
                 "git",
                 ["-C", checkout, "status", "--porcelain=v1"],
@@ -587,9 +887,7 @@ export function createSystemDependencies(repoRoot) {
                     "The temporary template checkout changed during commit. Nothing was pushed."
                 );
             }
-            return captured("git", ["-C", checkout, "rev-parse", "HEAD"], {
-                cwd: repoRoot,
-            }).trim();
+            return commit;
         },
 
         async pushUpdate(checkout) {
@@ -602,6 +900,22 @@ export function createSystemDependencies(repoRoot) {
                     "--quiet",
                     TEMPLATE_REMOTE,
                     DEFAULT_BRANCH,
+                ],
+                { cwd: repoRoot }
+            );
+        },
+
+        async pushFresh({ checkout, commit, expectedCommit }) {
+            runCommand(
+                "git",
+                [
+                    "-C",
+                    checkout,
+                    "push",
+                    "--quiet",
+                    `--force-with-lease=refs/heads/${DEFAULT_BRANCH}:${expectedCommit}`,
+                    TEMPLATE_REMOTE,
+                    `${commit}:refs/heads/${DEFAULT_BRANCH}`,
                 ],
                 { cwd: repoRoot }
             );
