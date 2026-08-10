@@ -1,0 +1,28 @@
+{
+  "name": "d1-r2-starter",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-sqlite --experimental-strip-types --test tests/*.test.ts",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "hono": "4.13.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260810.1",
+    "@types/node": "22.19.19",
+    "drizzle-kit": "0.31.10",
+    "typescript": "5.9.3",
+    "wrangler": "4.120.0"
+  }
+}
