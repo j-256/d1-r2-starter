@@ -98,20 +98,26 @@ test("scanForResidue passes a clean tree", () => {
     }
 });
 
-test("copyGeneratedPath excludes nested Git and macOS metadata", () => {
+test("copyGeneratedPath excludes dependencies, Git, and macOS metadata", () => {
     const root = tempTree();
     try {
         const source = join(root, "source");
         const target = join(root, "target");
         mkdirSync(join(source, "nested", ".git"), { recursive: true });
+        mkdirSync(join(source, "nested", "node_modules"));
         writeFileSync(join(source, "nested", ".DS_Store"), "metadata\n");
         writeFileSync(join(source, "nested", ".git", "config"), "private\n");
+        writeFileSync(
+            join(source, "nested", "node_modules", "package.json"),
+            "{}\n"
+        );
         writeFileSync(join(source, "nested", "keep.txt"), "public\n");
 
         copyGeneratedPath(source, target);
 
         assert.equal(existsSync(join(target, "nested", ".DS_Store")), false);
         assert.equal(existsSync(join(target, "nested", ".git")), false);
+        assert.equal(existsSync(join(target, "nested", "node_modules")), false);
         assert.equal(existsSync(join(target, "nested", "keep.txt")), true);
     } finally {
         rmSync(root, { recursive: true, force: true });
