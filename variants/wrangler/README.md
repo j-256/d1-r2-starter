@@ -1,6 +1,8 @@
-# Cloudflare D1 + R2 starter (self-hosted)
+# Cloudflare D1 + R2 starter for Workers
 
-Ship a Cloudflare Worker backed by [D1](https://developers.cloudflare.com/d1/) (SQL) and [R2](https://developers.cloudflare.com/r2/) (object storage) to your own account, with the parts that are easy to get wrong already done right: fail-closed auth, migration-owned schema, and a storage core you can point at a different database or object store without rewriting your API. Built on [Hono](https://hono.dev) and deployed with `wrangler deploy`.
+Start building with a database and file storage already wired up.
+
+This TypeScript starter for Cloudflare Workers connects [D1](https://developers.cloudflare.com/d1/) and [R2](https://developers.cloudflare.com/r2/) behind a small, consistent API and includes a browser storage console, fail-closed authentication, schema migrations, tests, and Wrangler deployment setup. Keep the included storage backends or swap either one without rewriting your routes or UI. Built with [Hono](https://hono.dev) and deployed with `wrangler deploy`.
 
 ## Why start here
 

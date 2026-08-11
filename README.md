@@ -1,6 +1,10 @@
-# Cloudflare D1 + R2 starter (OpenAI Sites)
+# Cloudflare D1 + R2 starter for OpenAI Sites
 
-A D1 (SQL) and R2 (object storage) control plane that deploys on OpenAI Sites (which runs on Cloudflare), with the parts that are easy to get wrong already handled: a migration-owned schema that can't drift from the code, and a storage core you can point at a different database or object store without rewriting your API. Access is delegated to the Sites access policy in front of the Worker, so this variant is safe only while the Site is access-controlled (see [Authorization](#authorization)). Written in strict TypeScript on [Vinext](https://github.com/cloudflare/vinext).
+Start building with a database and file storage already wired up.
+
+This TypeScript starter for OpenAI Sites connects [D1](https://developers.cloudflare.com/d1/) and [R2](https://developers.cloudflare.com/r2/) behind a small, consistent API and includes an interactive storage console, schema migrations, tests, and deployment setup. Keep the included storage backends or swap either one without rewriting your routes or UI. Built with [Vinext](https://github.com/cloudflare/vinext).
+
+> **Keep deployed Sites access-controlled.** This variant delegates authorization to the Sites access policy. Making a deployed Site public exposes its storage API until you add application-level authorization. See [Authorization](#authorization).
 
 ## Why start here
 
