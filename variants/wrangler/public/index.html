@@ -3,100 +3,26 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>D1 + R2 starter</title>
+  <title>D1 + R2 Document Library</title>
   <style>
-    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    body { max-width: 46rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-    h1 { font-size: 1.4rem; }
-    fieldset { margin: 1rem 0; border: 1px solid #8884; border-radius: 8px; }
-    label { display: block; margin: 0.5rem 0 0.15rem; font-size: 0.85rem; }
-    input, textarea, select { width: 100%; box-sizing: border-box; padding: 0.4rem; font: inherit; }
-    textarea { min-height: 5rem; }
-    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.6rem; }
-    button { padding: 0.4rem 0.8rem; font: inherit; cursor: pointer; }
-    pre { background: #8881; padding: 0.75rem; border-radius: 8px; overflow: auto; min-height: 3rem; }
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { align-items: center; background: #f4f3ef; color: #18221d; display: flex; justify-content: center; margin: 0; min-height: 100vh; }
+    main { max-width: 45rem; padding: 3rem 1.5rem; }
+    .eyebrow { color: #1f6b45; font-family: ui-monospace, monospace; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+    h1 { font-size: clamp(2.6rem, 8vw, 4.5rem); letter-spacing: -0.05em; line-height: 1; margin: 1.1rem 0 1.5rem; }
+    p { color: #67716b; font-size: 1.1rem; line-height: 1.7; }
+    code { background: white; border: 1px solid #dfe3dc; border-radius: 0.5rem; display: block; margin-top: 0.5rem; padding: 0.65rem 0.75rem; }
   </style>
 </head>
 <body>
-  <h1>D1 + R2 storage console</h1>
-  <p>Send operations to the Worker API. All requests carry your shared secret as a bearer token.</p>
-
-  <label for="secret">Shared secret</label>
-  <input id="secret" type="password" placeholder="SHARED_SECRET" autocomplete="off" />
-
-  <fieldset>
-    <legend>Operation</legend>
-    <label for="resource">Resource</label>
-    <select id="resource">
-      <option value="d1">D1 (database)</option>
-      <option value="r2">R2 (object storage)</option>
-    </select>
-
-    <label for="key">Key</label>
-    <input id="key" type="text" placeholder="settings:theme" autocomplete="off" />
-
-    <label for="value">Value</label>
-    <textarea id="value" placeholder="Text to store"></textarea>
-
-    <label for="contentType">Content type (optional)</label>
-    <input id="contentType" type="text" placeholder="text/plain; charset=utf-8" autocomplete="off" />
-
-    <div class="row">
-      <button data-op="list">List</button>
-      <button data-op="get">Get</button>
-      <button data-op="put">Put</button>
-      <button data-op="delete">Delete</button>
-    </div>
-  </fieldset>
-
-  <label for="output">Last response</label>
-  <pre id="output">Ready.</pre>
-
-  <script>
-    const $ = (id) => document.getElementById(id);
-    const output = $("output");
-
-    function show(label, status, body) {
-      output.textContent = `${label} -> ${status}\n` + JSON.stringify(body, null, 2);
-    }
-
-    async function run(op) {
-      const resource = $("resource").value;
-      const secret = $("secret").value;
-      const key = $("key").value.trim();
-      const base = `/api/${resource}`;
-      const headers = { authorization: `Bearer ${secret}` };
-      let url = base;
-      const init = { method: "GET", headers, cache: "no-store" };
-
-      try {
-        if (op === "list") {
-          // GET with no key returns the list
-        } else if (op === "get") {
-          url = `${base}?key=${encodeURIComponent(key)}`;
-        } else if (op === "delete") {
-          init.method = "DELETE";
-          url = `${base}?key=${encodeURIComponent(key)}`;
-        } else if (op === "put") {
-          init.method = "PUT";
-          const payload = { key, value: $("value").value };
-          const contentType = $("contentType").value.trim();
-          if (contentType) payload.contentType = contentType;
-          init.body = JSON.stringify(payload);
-          headers["content-type"] = "application/json";
-        }
-        const response = await fetch(url, init);
-        let body;
-        try { body = await response.json(); } catch { body = "(no JSON body)"; }
-        show(`${init.method} ${op}`, response.status, body);
-      } catch (error) {
-        show(`${op} failed`, "network error", { error: String(error) });
-      }
-    }
-
-    for (const button of document.querySelectorAll("button[data-op]")) {
-      button.addEventListener("click", () => run(button.dataset.op));
-    }
-  </script>
+  <main>
+    <p class="eyebrow">Shared feature API ready</p>
+    <h1>D1 + R2 Document Library</h1>
+    <p>The data-model-neutral platform shell runs a document feature that stores structured metadata in D1 and binary content in R2.</p>
+    <code>GET /api/documents</code>
+    <code>POST /api/documents</code>
+    <code>GET /api/documents/:id</code>
+    <code>DELETE /api/documents/:id</code>
+  </main>
 </body>
 </html>

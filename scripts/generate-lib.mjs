@@ -12,13 +12,13 @@ import { basename, join, relative, sep } from "node:path";
 // Paths copied verbatim into BOTH emitted trees. This is the shared product
 // (openai gets these via copy-root; only the wrangler emit consumes this list)
 export const SHARED_PATHS = [
-    "storage",
+    "app-context.ts",
+    "app-services.ts",
+    "features",
     "platform",
     "db",
     "drizzle",
     "drizzle.config.ts",
-    "runtime",
-    "routes",
     "tests",
     "LICENSE",
 ];
@@ -74,6 +74,11 @@ export const RESIDUE_PATTERN = /oai-|\.openai|chatgpt|siwc|vinext|codex-preview/
 
 // Package names banned from the WRANGLER package.json dependency maps
 export const FORBIDDEN_DEPS = ["next", "react", "react-dom", "vinext"];
+
+export const WRANGLER_PACKAGE_FILES = Object.freeze([
+    "package.json",
+    "package-lock.json",
+]);
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist"]);
 const COPY_EXCLUDED_NAMES = new Set([".DS_Store", ".git"]);
@@ -204,7 +209,7 @@ export function emitOpenai(repoRoot, outDir) {
 
 /**
  * Scans an emitted openai tree for factory-only residue that the copy-root
- * subtraction can miss. Returns "relpath: reason" strings; empty means clean.
+ * subtraction can miss and returns "relpath: reason" strings; empty means clean
  * Symmetric with scanForResidue (wrangler) so the openai emit also fails loud
  * instead of shipping factory tooling into a template that goes public
  */
@@ -255,6 +260,11 @@ export function emitWrangler(repoRoot, outDir) {
 
     // Lay the wrangler overlay contents at the tree root
     const overlay = join(repoRoot, "variants", "wrangler");
+    for (const file of WRANGLER_PACKAGE_FILES) {
+        if (!existsSync(join(overlay, file))) {
+            throw new Error(`Missing Wrangler package file: ${file}`);
+        }
+    }
     for (const entry of readdirSync(overlay, { withFileTypes: true })) {
         copyGeneratedPath(join(overlay, entry.name), join(outDir, entry.name));
     }

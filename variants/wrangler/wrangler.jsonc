@@ -2,9 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "d1-r2-starter",
   "main": "src/worker.ts",
-  // Pin to a date the installed Workers runtime supports; bump when adopting new runtime features.
+  // Pin to a date the installed Workers runtime supports; bump when adopting new runtime features
   "compatibility_date": "2026-08-01",
-  // nodejs_compat is required: runtime/storage-context.ts uses node:async_hooks.
+  // nodejs_compat is required because platform/request-context.ts uses node:async_hooks
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "public"
@@ -13,9 +13,9 @@
     {
       "binding": "DB",
       "database_name": "d1-r2-starter",
-      // Replace with the id printed by `wrangler d1 create d1-r2-starter`.
+      // Replace with the id printed by `wrangler d1 create d1-r2-starter`
       "database_id": "REPLACE_WITH_D1_DATABASE_ID",
-      // Drizzle writes flat drizzle/NNNN_name.sql files; point Wrangler there.
+      // Drizzle writes flat drizzle/NNNN_name.sql files; point Wrangler there
       "migrations_dir": "drizzle"
     }
   ],

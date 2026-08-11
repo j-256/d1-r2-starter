@@ -15,12 +15,14 @@ import { fileURLToPath } from "node:url";
 import {
     copyGeneratedPath,
     emitOpenai,
+    emitWrangler,
     OPENAI_PACKAGE_SCRIPT_ALLOWLIST,
     OPENAI_SCRIPT_ALLOWLIST,
     scanForResidue,
     scanOpenaiResidue,
     RESIDUE_PATTERN,
     FORBIDDEN_DEPS,
+    SHARED_PATHS,
 } from "./generate-lib.mjs";
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -29,13 +31,28 @@ const VALIDATE_ARTIFACT_SCRIPT = join(
     "validate-artifact.sh"
 );
 const REQUIRED_SITE_MIGRATIONS = Object.freeze([
-    "0000_complex_thena.sql",
-    "0001_add-content-type-demo.sql",
+    "0000_create-documents.sql",
     "meta/_journal.json",
 ]);
 
 function tempTree() {
     return mkdtempSync(join(tmpdir(), "gen-guard-"));
+}
+
+function writeWranglerFactoryFixture(root) {
+    mkdirSync(root, { recursive: true });
+    for (const path of SHARED_PATHS) {
+        const target = join(root, path);
+        if (path.includes(".") || path === "LICENSE") {
+            writeFileSync(target, "fixture\n");
+        } else {
+            mkdirSync(target, { recursive: true });
+        }
+    }
+    const overlay = join(root, "variants", "wrangler");
+    mkdirSync(overlay, { recursive: true });
+    writeFileSync(join(overlay, "package.json"), "{}\n");
+    return overlay;
 }
 
 function writeArtifactFixture(root) {
@@ -183,6 +200,26 @@ test("emitOpenai allowlists runtime scripts and package commands", () => {
     }
 });
 
+test("emitWrangler requires and copies a package lock", () => {
+    const root = tempTree();
+    try {
+        const source = join(root, "source");
+        const output = join(root, "output");
+        const overlay = writeWranglerFactoryFixture(source);
+
+        assert.throws(
+            () => emitWrangler(source, output),
+            /Missing Wrangler package file: package-lock\.json/
+        );
+
+        writeFileSync(join(overlay, "package-lock.json"), "{}\n");
+        emitWrangler(source, output);
+        assert.equal(existsSync(join(output, "package-lock.json")), true);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("validate-artifact accepts the complete packaged migration history", () => {
     const root = tempTree();
     try {
@@ -203,7 +240,7 @@ test("validate-artifact rejects a missing packaged migration", () => {
                 "dist",
                 ".openai",
                 "drizzle",
-                "0001_add-content-type-demo.sql"
+                "0000_create-documents.sql"
             )
         );
         assert.throws(

@@ -1,34 +1,32 @@
 import { Hono } from "hono";
-import { createTextStoreRoute } from "../routes/text-store-route.ts";
-import { runWithRequestContext } from "../runtime/storage-context.ts";
-import { sharedSecretAuthorizer } from "../storage/authorizers/shared-secret.ts";
+import { runWithAppContext } from "../app-context.ts";
+import { createAppServices } from "../app-services.ts";
 import {
-    createStorageServices,
-    type RuntimeStorageBindings,
-} from "../storage/create-services.ts";
+    documentCollectionHandlers,
+    documentItemHandlers,
+} from "../features/documents/http.ts";
+import type { RuntimeBindings } from "../platform/cloudflare-bindings.ts";
+import { sharedSecretAuthorizer } from "../platform/authorizers/shared-secret.ts";
 
-type Bindings = RuntimeStorageBindings & { SHARED_SECRET: string };
+type Bindings = RuntimeBindings & { SHARED_SECRET: string };
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-// Every /api request builds request-scoped services + a real authorizer, then
-// runs the shared route factory inside the storage context. No validation,
-// auth, or response logic lives here; the factory owns all of it.
 app.use("/api/*", async (c, next) => {
-    const services = createStorageServices(c.env);
+    const services = createAppServices(c.env);
     const authorizer = sharedSecretAuthorizer(c.env.SHARED_SECRET);
-    return runWithRequestContext({ authorizer, services }, () => next());
+    return runWithAppContext({ authorizer, services }, () => next());
 });
 
-const d1 = createTextStoreRoute("d1");
-const r2 = createTextStoreRoute("r2");
-
-app.get("/api/d1", (c) => d1.get(c.req.raw));
-app.put("/api/d1", (c) => d1.put(c.req.raw));
-app.delete("/api/d1", (c) => d1.delete(c.req.raw));
-
-app.get("/api/r2", (c) => r2.get(c.req.raw));
-app.put("/api/r2", (c) => r2.put(c.req.raw));
-app.delete("/api/r2", (c) => r2.delete(c.req.raw));
+app.get("/api/documents", (c) => documentCollectionHandlers.get(c.req.raw));
+app.post("/api/documents", (c) => documentCollectionHandlers.post(c.req.raw));
+app.get(
+    "/api/documents/:id",
+    (c) => documentItemHandlers.get(c.req.raw, c.req.param("id"))
+);
+app.delete(
+    "/api/documents/:id",
+    (c) => documentItemHandlers.delete(c.req.raw, c.req.param("id"))
+);
 
 export default app;
