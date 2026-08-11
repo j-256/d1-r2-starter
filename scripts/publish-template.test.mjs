@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+    chmodSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -13,6 +14,8 @@ import { join } from "node:path";
 import test from "node:test";
 import {
     createSystemDependencies,
+    factoryRevisionVariable,
+    historyModeChoices,
     isAffirmativeResponse,
     mergeChangedPaths,
     parseHttpStatus,
@@ -20,12 +23,15 @@ import {
     publishTemplates,
     publicationConfirmationQuestion,
     publishUsage,
+    repositoryVariableWriteArguments,
     resolveCommitMessage,
     syncGeneratedTree,
 } from "./publish-template-lib.mjs";
 
 const UPDATE_MESSAGE = "Refresh generated template";
+const UPDATE_MESSAGE_WITH_BODY = `${UPDATE_MESSAGE}\n\nExplain the generated boundary`;
 const HTTP_NOT_FOUND = 404;
+const FACTORY_REPOSITORY = "j-256/d1-r2-starter";
 const OPENAI_REPOSITORY = "j-256/d1-r2-starter-openai";
 const WRANGLER_REPOSITORY = "j-256/d1-r2-starter-wrangler";
 
@@ -60,23 +66,122 @@ function createTemplateRemote(root) {
     };
 }
 
+function createReplayFactory(root) {
+    const factory = join(root, "factory");
+    mkdirSync(join(factory, "scripts"), { recursive: true });
+    execFileSync("git", ["init", "-b", "main", factory]);
+    configureTestGit(factory);
+    writeFileSync(
+        join(factory, "scripts", "generate.mjs"),
+        [
+            'import { cpSync, mkdirSync, rmSync } from "node:fs";',
+            'rmSync("dist", { force: true, recursive: true });',
+            'for (const variant of ["openai", "wrangler"]) {',
+            '    const output = `dist/${variant}`;',
+            '    mkdirSync(output, { recursive: true });',
+            '    cpSync("template.txt", `${output}/template.txt`);',
+            '}',
+            '',
+        ].join("\n")
+    );
+    writeFileSync(
+        join(factory, "package.json"),
+        `${JSON.stringify({
+            private: true,
+            scripts: { generate: "node scripts/generate.mjs" },
+        }, null, 2)}\n`
+    );
+    writeFileSync(join(factory, "template.txt"), "baseline\n");
+    runGit(factory, [
+        "add",
+        "--",
+        "package.json",
+        "scripts/generate.mjs",
+        "template.txt",
+    ]);
+    runGit(factory, [
+        "commit",
+        "-m",
+        "Establish template baseline",
+        "--",
+        "package.json",
+        "scripts/generate.mjs",
+        "template.txt",
+    ]);
+    const baseline = runGit(factory, ["rev-parse", "HEAD"]).trim();
+
+    writeFileSync(join(factory, "template.txt"), "feature\n");
+    runGit(factory, ["add", "--", "template.txt"]);
+    runGit(factory, [
+        "commit",
+        "-m",
+        "Add generated feature",
+        "-m",
+        "Explain the feature boundary",
+        "--",
+        "template.txt",
+    ]);
+    writeFileSync(join(factory, "factory-only.txt"), "publisher\n");
+    runGit(factory, ["add", "--", "factory-only.txt"]);
+    runGit(factory, [
+        "commit",
+        "-m",
+        "Change factory tooling",
+        "--",
+        "factory-only.txt",
+    ]);
+    return { baseline, factory };
+}
+
 function fakeDependencies(options = {}) {
     const operations = [];
     const defaultChangedPaths = options.changedPaths ?? ["README.md"];
     const defaultExists = options.exists ?? true;
+    const changedPathCallCounts = new Map();
+    const factoryRevisions = new Map(
+        Object.entries(options.factoryRevisionsByVariant ?? {})
+    );
     const trashedBackups = new Set();
 
     return {
         dependencies: {
             async assertFactoryReady() {
                 operations.push("assertFactoryReady");
+                return options.factoryHead ?? "factory-head";
             },
             async generate() {
                 operations.push("generate");
             },
+            async assertReplayBaseline({ from }) {
+                operations.push(`assertReplayBaseline:${from}`);
+                const error = options.replayBaselineErrorByRevision?.[from]
+                    ?? options.replayBaselineError;
+                if (error) throw error;
+            },
+            async prepareReplay({ from }) {
+                operations.push(`prepareReplay:${from}`);
+                return options.replayByRevision?.[from] ?? options.replay ?? {
+                    base: { revision: "baseline" },
+                    checkpoints: [],
+                    tempRoot: `replay-temp:${from}`,
+                };
+            },
             async repositoryExists(repository) {
                 operations.push(`repositoryExists:${repository}`);
                 return options.existsByRepository?.[repository] ?? defaultExists;
+            },
+            async readFactoryRevision(variant) {
+                operations.push(`readFactoryRevision:${variant}`);
+                return factoryRevisions.get(variant);
+            },
+            async recordFactoryRevision({ revision, variant }) {
+                operations.push(
+                    `recordFactoryRevision:${variant}:${revision}`
+                );
+                const error = options.recordErrorByVariant?.[variant]
+                    ?? options.recordError;
+                if (error) throw error;
+                factoryRevisions.set(variant, revision);
             },
             async prepareCheckout({ config }) {
                 operations.push(`prepareCheckout:${config.repository}`);
@@ -91,8 +196,21 @@ function fakeDependencies(options = {}) {
             async syncGeneratedTree(outputDirectory, checkout) {
                 operations.push(`sync:${outputDirectory}:${checkout}`);
             },
+            async syncReplayTree({ checkout, snapshot }) {
+                operations.push(
+                    `syncReplay:${snapshot.revision}:${checkout}`
+                );
+            },
             async collectChangedPaths(checkout) {
                 operations.push(`collectChangedPaths:${checkout}`);
+                const call = changedPathCallCounts.get(checkout) ?? 0;
+                changedPathCallCounts.set(checkout, call + 1);
+                const sequence = options.changedPathSequenceByRepository?.[
+                    checkout
+                ];
+                if (sequence && call < sequence.length) {
+                    return sequence[call];
+                }
                 return options.changedPathsByRepository?.[checkout]
                     ?? defaultChangedPaths;
             },
@@ -102,14 +220,25 @@ function fakeDependencies(options = {}) {
             async showStagedDiff(checkout) {
                 operations.push(`showStagedDiff:${checkout}`);
             },
-            async confirm({ history, repository }) {
+            async showCreatedCommit(checkout, commit) {
+                operations.push(`showCreatedCommit:${checkout}:${commit}`);
+            },
+            async confirm({ commitCount, history, repository }) {
                 operations.push(`confirm:${repository}:${history ?? "create"}`);
+                if (commitCount !== undefined) {
+                    operations.push(
+                        `confirmCommitCount:${repository}:${commitCount}`
+                    );
+                }
                 return options.confirmedByRepository?.[repository]
                     ?? options.confirmed
                     ?? true;
             },
-            async requestHistoryMode({ repository }) {
+            async requestHistoryMode({ replay, repository }) {
                 operations.push(`requestHistoryMode:${repository}`);
+                operations.push(
+                    `requestHistoryReplay:${repository}:${replay ?? false}`
+                );
                 return options.historyByRepository?.[repository]
                     ?? options.requestedHistory
                     ?? "append";
@@ -173,6 +302,9 @@ function fakeDependencies(options = {}) {
             async cleanup(workspace) {
                 operations.push(`cleanup:${workspace.checkout}`);
             },
+            async cleanupReplay(replay) {
+                operations.push(`cleanupReplay:${replay.tempRoot}`);
+            },
             log(message) {
                 operations.push(`log:${message}`);
             },
@@ -191,6 +323,8 @@ test("parsePublishArguments requires an explicit template target", () => {
         help: false,
         history: undefined,
         message: undefined,
+        replay: false,
+        replayFrom: undefined,
         variant: "all",
         yes: false,
     });
@@ -214,6 +348,8 @@ test("parsePublishArguments accepts a variant, history, message, and confirmatio
             help: false,
             history: "fresh",
             message: UPDATE_MESSAGE,
+            replay: false,
+            replayFrom: undefined,
             variant: "openai",
             yes: true,
         }
@@ -228,6 +364,8 @@ test("parsePublishArguments expands clobber to fresh history", () => {
             help: false,
             history: "fresh",
             message: undefined,
+            replay: false,
+            replayFrom: undefined,
             variant: "all",
             yes: true,
         }
@@ -246,6 +384,67 @@ test("parsePublishArguments expands clobber to fresh history", () => {
 test("parsePublishArguments accepts explicit all and both selections", () => {
     assert.equal(parsePublishArguments(["all"]).variant, "all");
     assert.equal(parsePublishArguments(["both"]).variant, "all");
+});
+
+test("parsePublishArguments accepts explicit and recorded checkpoint replay", () => {
+    assert.deepEqual(
+        parsePublishArguments([
+            "all",
+            "--history",
+            "fresh",
+            "--replay-from",
+            "main~3",
+            "--yes",
+        ]),
+        {
+            clobber: false,
+            help: false,
+            history: "fresh",
+            message: undefined,
+            replay: false,
+            replayFrom: "main~3",
+            variant: "all",
+            yes: true,
+        }
+    );
+    assert.deepEqual(
+        parsePublishArguments([
+            "openai",
+            "--history",
+            "append",
+            "--replay",
+            "--yes",
+        ]),
+        {
+            clobber: false,
+            help: false,
+            history: "append",
+            message: undefined,
+            replay: true,
+            replayFrom: undefined,
+            variant: "openai",
+            yes: true,
+        }
+    );
+    assert.throws(
+        () => parsePublishArguments([
+            "openai",
+            "--replay-from",
+            "main~3",
+            "--message",
+            UPDATE_MESSAGE,
+        ]),
+        /cannot be combined with replay/
+    );
+    assert.throws(
+        () => parsePublishArguments([
+            "openai",
+            "--replay",
+            "--replay-from",
+            "main~3",
+        ]),
+        /--replay cannot be combined with --replay-from/
+    );
 });
 
 test("parsePublishArguments rejects unknown variants and malformed options", () => {
@@ -269,9 +468,188 @@ test("publishUsage documents history modes and persistent backups", () => {
     assert.match(usage, /both is an alias/);
     assert.match(usage, /--history append\|fresh/);
     assert.match(usage, /--clobber/);
+    assert.match(usage, /--replay\s/);
+    assert.match(usage, /--replay-from/);
     assert.match(usage, /root commits default to Initial commit/);
     assert.match(usage, /existing repos need history or clobber/);
     assert.match(usage, /TEMPLATE_PUBLISH_BACKUP_DIR/);
+});
+
+test("repository variable writes create and update string publication state", () => {
+    assert.deepEqual(
+        repositoryVariableWriteArguments({
+            repository: FACTORY_REPOSITORY,
+            revision: "factory-head",
+            variable: factoryRevisionVariable("openai"),
+            variableExists: false,
+        }),
+        [
+            "api",
+            "--method",
+            "POST",
+            `repos/${FACTORY_REPOSITORY}/actions/variables`,
+            "--raw-field",
+            `name=${factoryRevisionVariable("openai")}`,
+            "--raw-field",
+            "value=factory-head",
+        ]
+    );
+    assert.deepEqual(
+        repositoryVariableWriteArguments({
+            repository: FACTORY_REPOSITORY,
+            revision: "factory-head",
+            variable: factoryRevisionVariable("openai"),
+            variableExists: true,
+        }),
+        [
+            "api",
+            "--method",
+            "PATCH",
+            `repos/${FACTORY_REPOSITORY}/actions/variables/${factoryRevisionVariable("openai")}`,
+            "--raw-field",
+            `name=${factoryRevisionVariable("openai")}`,
+            "--raw-field",
+            "value=factory-head",
+        ]
+    );
+});
+
+test("system dependencies keep publication cursors on factory repository metadata", async () => {
+    const root = tempTree();
+    const bin = join(root, "bin");
+    const fakeGh = join(bin, "gh");
+    const logPath = join(root, "gh.log");
+    const statePath = join(root, "state.json");
+    const originalPath = process.env.PATH;
+    const originalLogPath = process.env.TEMPLATE_TEST_GH_LOG;
+    const originalStatePath = process.env.TEMPLATE_TEST_GH_STATE;
+    const originalMismatch = process.env.TEMPLATE_TEST_GH_MISMATCH;
+    mkdirSync(bin);
+    writeFileSync(
+        fakeGh,
+        [
+            "#!/usr/bin/env node",
+            'const fs = require("node:fs");',
+            "const args = process.argv.slice(2);",
+            'fs.appendFileSync(process.env.TEMPLATE_TEST_GH_LOG, `${JSON.stringify(args)}\\n`);',
+            'if (args[0] === "repo" && args[1] === "view") {',
+            `    process.stdout.write("${FACTORY_REPOSITORY}\\n");`,
+            "    process.exit(0);",
+            "}",
+            'const methodIndex = args.indexOf("--method");',
+            'const method = methodIndex === -1 ? "GET" : args[methodIndex + 1];',
+            "const endpoint = methodIndex === -1 ? args[1] : args[methodIndex + 2];",
+            'const marker = "/actions/variables/";',
+            "const markerIndex = endpoint.indexOf(marker);",
+            "const variable = markerIndex === -1 ? undefined : endpoint.slice(markerIndex + marker.length);",
+            "const state = fs.existsSync(process.env.TEMPLATE_TEST_GH_STATE)",
+            '    ? JSON.parse(fs.readFileSync(process.env.TEMPLATE_TEST_GH_STATE, "utf8"))',
+            "    : {};",
+            'if (method === "GET") {',
+            "    if (!variable || !Object.hasOwn(state, variable)) {",
+            '        process.stderr.write("gh: Not Found (HTTP 404)\\n");',
+            "        process.exit(1);",
+            "    }",
+            "    process.stdout.write(JSON.stringify({ name: variable, value: state[variable] }));",
+            "    process.exit(0);",
+            "}",
+            "const fields = {};",
+            "for (let index = 0; index < args.length; index += 1) {",
+            '    if (args[index] !== "--raw-field") continue;',
+            '    const [name, ...value] = args[index + 1].split("=");',
+            '    fields[name] = value.join("=");',
+            "}",
+            'state[fields.name] = process.env.TEMPLATE_TEST_GH_MISMATCH ? "wrong" : fields.value;',
+            "fs.writeFileSync(process.env.TEMPLATE_TEST_GH_STATE, JSON.stringify(state));",
+            "",
+        ].join("\n")
+    );
+    chmodSync(fakeGh, 0o755);
+    process.env.PATH = `${bin}:${originalPath}`;
+    process.env.TEMPLATE_TEST_GH_LOG = logPath;
+    process.env.TEMPLATE_TEST_GH_STATE = statePath;
+    delete process.env.TEMPLATE_TEST_GH_MISMATCH;
+
+    try {
+        const dependencies = createSystemDependencies(root);
+        await dependencies.recordFactoryRevision({
+            revision: "first-head",
+            variant: "openai",
+        });
+        await dependencies.recordFactoryRevision({
+            revision: "second-head",
+            variant: "openai",
+        });
+        await dependencies.recordFactoryRevision({
+            revision: "second-head",
+            variant: "openai",
+        });
+        assert.equal(
+            await dependencies.readFactoryRevision("openai"),
+            "second-head"
+        );
+
+        process.env.TEMPLATE_TEST_GH_MISMATCH = "1";
+        await assert.rejects(
+            dependencies.recordFactoryRevision({
+                revision: "wrangler-head",
+                variant: "wrangler",
+            }),
+            /publication state verification failed/
+        );
+
+        const calls = readFileSync(logPath, "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+        const apiEndpoints = calls
+            .filter(([command]) => command === "api")
+            .map((args) => {
+                const methodIndex = args.indexOf("--method");
+                return methodIndex === -1 ? args[1] : args[methodIndex + 2];
+            });
+        assert.equal(
+            apiEndpoints.every((endpoint) =>
+                endpoint.startsWith(
+                    `repos/${FACTORY_REPOSITORY}/actions/variables`
+                )
+            ),
+            true
+        );
+        assert.equal(
+            apiEndpoints.some((endpoint) =>
+                endpoint.includes(OPENAI_REPOSITORY)
+                || endpoint.includes(WRANGLER_REPOSITORY)
+            ),
+            false
+        );
+        assert.equal(
+            calls.filter((args) => args.includes("POST")).length,
+            2
+        );
+        assert.equal(
+            calls.filter((args) => args.includes("PATCH")).length,
+            1
+        );
+    } finally {
+        process.env.PATH = originalPath;
+        if (originalLogPath === undefined) {
+            delete process.env.TEMPLATE_TEST_GH_LOG;
+        } else {
+            process.env.TEMPLATE_TEST_GH_LOG = originalLogPath;
+        }
+        if (originalStatePath === undefined) {
+            delete process.env.TEMPLATE_TEST_GH_STATE;
+        } else {
+            process.env.TEMPLATE_TEST_GH_STATE = originalStatePath;
+        }
+        if (originalMismatch === undefined) {
+            delete process.env.TEMPLATE_TEST_GH_MISMATCH;
+        } else {
+            process.env.TEMPLATE_TEST_GH_MISMATCH = originalMismatch;
+        }
+        rmSync(root, { force: true, recursive: true });
+    }
 });
 
 test("isAffirmativeResponse accepts short yes answers", () => {
@@ -309,6 +687,35 @@ test("publicationConfirmationQuestion names each target and action", () => {
         }),
         `Replace main in ${OPENAI_REPOSITORY} with a fresh root commit and force-push? [y/N] `
     );
+    assert.equal(
+        publicationConfirmationQuestion({
+            action: "update",
+            commitCount: 3,
+            history: "append",
+            repository: OPENAI_REPOSITORY,
+        }),
+        `Append and publish 3 commits to ${OPENAI_REPOSITORY}? [y/N] `
+    );
+    assert.equal(
+        publicationConfirmationQuestion({
+            action: "replace",
+            commitCount: 1,
+            history: "fresh",
+            repository: OPENAI_REPOSITORY,
+        }),
+        `Replace main in ${OPENAI_REPOSITORY} with a fresh history of 1 commit and force-push? [y/N] `
+    );
+});
+
+test("historyModeChoices describe normal and replay publications accurately", () => {
+    assert.deepEqual(historyModeChoices(), [
+        "  1. append (recommended): preserve main, then add one update commit",
+        "  2. fresh: replace main with one new root commit",
+    ]);
+    assert.deepEqual(historyModeChoices({ replay: true }), [
+        "  1. append (recommended): preserve main, then add relevant factory checkpoints",
+        "  2. fresh: replace main with a baseline root plus relevant checkpoints",
+    ]);
 });
 
 test("resolveCommitMessage defaults for root commits only", () => {
@@ -412,15 +819,83 @@ test("system dependencies stage and commit explicit generated paths", async () =
             changedPaths: paths,
             checkout: workspace.checkout,
             history: undefined,
-            message: "Initial commit",
+            message: UPDATE_MESSAGE_WITH_BODY,
         });
         assert.match(commit, /^[0-9a-f]{40,64}$/);
         assert.equal(
             runGit(workspace.checkout, ["status", "--porcelain=v1"]),
             ""
         );
+        assert.equal(
+            runGit(workspace.checkout, ["log", "-1", "--format=%B"]).trim(),
+            UPDATE_MESSAGE_WITH_BODY
+        );
     } finally {
         if (workspace) await dependencies.cleanup(workspace);
+        rmSync(root, { force: true, recursive: true });
+    }
+});
+
+test("system dependencies generate first-parent replay snapshots and preserve message bodies", async () => {
+    const root = tempTree();
+    let replay;
+    let emptyReplay;
+    try {
+        const { baseline, factory } = createReplayFactory(root);
+        const dependencies = createSystemDependencies(factory);
+        replay = await dependencies.prepareReplay({ from: baseline });
+
+        assert.equal(replay.base.revision, baseline);
+        assert.equal(replay.checkpoints.length, 2);
+        assert.equal(
+            replay.checkpoints[0].message,
+            "Add generated feature\n\nExplain the feature boundary"
+        );
+        assert.equal(
+            readFileSync(
+                join(replay.base.root, "dist", "openai", "template.txt"),
+                "utf8"
+            ),
+            "baseline\n"
+        );
+        assert.equal(
+            readFileSync(
+                join(
+                    replay.checkpoints[0].root,
+                    "dist",
+                    "wrangler",
+                    "template.txt"
+                ),
+                "utf8"
+            ),
+            "feature\n"
+        );
+        assert.equal(
+            readFileSync(
+                join(
+                    replay.checkpoints[1].root,
+                    "dist",
+                    "openai",
+                    "template.txt"
+                ),
+                "utf8"
+            ),
+            "feature\n"
+        );
+        await dependencies.cleanupReplay(replay);
+        replay = undefined;
+
+        const head = runGit(factory, ["rev-parse", "HEAD"]).trim();
+        emptyReplay = await dependencies.prepareReplay({ from: head });
+        assert.equal(emptyReplay.base.revision, head);
+        assert.deepEqual(emptyReplay.checkpoints, []);
+        await dependencies.cleanupReplay(emptyReplay);
+        emptyReplay = undefined;
+    } finally {
+        if (replay) rmSync(replay.tempRoot, { force: true, recursive: true });
+        if (emptyReplay) {
+            rmSync(emptyReplay.tempRoot, { force: true, recursive: true });
+        }
         rmSync(root, { force: true, recursive: true });
     }
 });
@@ -653,6 +1128,546 @@ test("publishTemplates compares both variants before publishing and runs setup o
     assert.equal(fake.operations.includes("log:wrangler  updated"), true);
 });
 
+test("checkpoint replay preserves relevant factory commits and pushes each template once", async () => {
+    const replay = {
+        base: { revision: "baseline" },
+        checkpoints: [
+            {
+                message: "Add shared platform",
+                revision: "shared",
+            },
+            {
+                message: "Clarify Sites development",
+                revision: "openai-docs",
+            },
+            {
+                message: "Add complete interfaces\n\nKeep each runtime native",
+                revision: "interfaces",
+            },
+        ],
+        tempRoot: "replay-temp",
+    };
+    const fake = fakeDependencies({
+        changedPathSequenceByRepository: {
+            [OPENAI_REPOSITORY]: [
+                ["README.md"],
+                [],
+                ["platform.ts"],
+                ["README.md"],
+                ["app/page.tsx"],
+                [],
+            ],
+            [WRANGLER_REPOSITORY]: [
+                ["README.md"],
+                [],
+                ["platform.ts"],
+                [],
+                ["public/index.html"],
+                [],
+            ],
+        },
+        exists: true,
+        replay,
+    });
+    const results = await publishTemplates(
+        {
+            help: false,
+            replayFrom: "baseline",
+            variant: "all",
+            yes: false,
+        },
+        fake.dependencies
+    );
+
+    assert.deepEqual(
+        results.map(({ commitCount, status, variant }) => ({
+            commitCount,
+            status,
+            variant,
+        })),
+        [
+            { commitCount: 3, status: "updated", variant: "openai" },
+            { commitCount: 2, status: "updated", variant: "wrangler" },
+        ]
+    );
+    assert.equal(
+        fake.operations.filter(
+            (operation) => operation === "prepareReplay:baseline"
+        ).length,
+        1
+    );
+    assert.equal(
+        fake.operations.includes(
+            `commit:${OPENAI_REPOSITORY}:append:Clarify Sites development:README.md`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith(
+                `commit:${WRANGLER_REPOSITORY}:append:Clarify Sites development:`
+            )
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.includes(
+            `commit:${WRANGLER_REPOSITORY}:append:Add complete interfaces\n\nKeep each runtime native:public/index.html`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.filter(
+            (operation) => operation === `pushUpdate:${OPENAI_REPOSITORY}`
+        ).length,
+        1
+    );
+    assert.equal(
+        fake.operations.filter(
+            (operation) => operation === `pushUpdate:${WRANGLER_REPOSITORY}`
+        ).length,
+        1
+    );
+    assert.equal(
+        fake.operations.includes(
+            `confirmCommitCount:${OPENAI_REPOSITORY}:3`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            `confirmCommitCount:${WRANGLER_REPOSITORY}:2`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            `requestHistoryReplay:${OPENAI_REPOSITORY}:true`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            `requestHistoryReplay:${WRANGLER_REPOSITORY}:true`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes("cleanupReplay:replay-temp"),
+        true
+    );
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith("requestCommitMessage:")
+        ),
+        false
+    );
+});
+
+test("recorded replay uses each template cursor from factory state", async () => {
+    const fake = fakeDependencies({
+        changedPathSequenceByRepository: {
+            [OPENAI_REPOSITORY]: [
+                ["README.md"],
+                [],
+                ["sites.ts"],
+                [],
+            ],
+            [WRANGLER_REPOSITORY]: [
+                ["README.md"],
+                [],
+                ["worker.ts"],
+                [],
+            ],
+        },
+        factoryRevisionsByVariant: {
+            openai: "openai-base",
+            wrangler: "wrangler-base",
+        },
+        replayByRevision: {
+            "openai-base": {
+                base: { revision: "openai-base" },
+                checkpoints: [
+                    {
+                        message: "Improve Sites empty state",
+                        revision: "factory-head",
+                    },
+                ],
+                tempRoot: "replay-temp:openai-base",
+            },
+            "wrangler-base": {
+                base: { revision: "wrangler-base" },
+                checkpoints: [
+                    {
+                        message: "Refine Worker interface",
+                        revision: "factory-head",
+                    },
+                ],
+                tempRoot: "replay-temp:wrangler-base",
+            },
+        },
+    });
+    const results = await publishTemplates(
+        {
+            help: false,
+            history: "append",
+            replay: true,
+            variant: "all",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.deepEqual(
+        results.map(({ commitCount, status, variant }) => ({
+            commitCount,
+            status,
+            variant,
+        })),
+        [
+            { commitCount: 1, status: "updated", variant: "openai" },
+            { commitCount: 1, status: "updated", variant: "wrangler" },
+        ]
+    );
+    assert.equal(
+        fake.operations.includes("readFactoryRevision:openai"),
+        true
+    );
+    assert.equal(
+        fake.operations.includes("readFactoryRevision:wrangler"),
+        true
+    );
+    assert.equal(
+        fake.operations.includes("prepareReplay:openai-base"),
+        true
+    );
+    assert.equal(
+        fake.operations.includes("prepareReplay:wrangler-base"),
+        true
+    );
+    assert.equal(
+        fake.operations.includes("assertReplayBaseline:openai-base"),
+        true
+    );
+    assert.equal(
+        fake.operations.includes("assertReplayBaseline:wrangler-base"),
+        true
+    );
+    for (const variant of ["openai", "wrangler"]) {
+        const repository = variant === "openai"
+            ? OPENAI_REPOSITORY
+            : WRANGLER_REPOSITORY;
+        assert.equal(
+            fake.operations.indexOf(`verifyPublished:${repository}`)
+                < fake.operations.indexOf(
+                    `recordFactoryRevision:${variant}:factory-head`
+                ),
+            true
+        );
+    }
+    assert.equal(
+        fake.operations.includes("cleanupReplay:replay-temp:openai-base"),
+        true
+    );
+    assert.equal(
+        fake.operations.includes("cleanupReplay:replay-temp:wrangler-base"),
+        true
+    );
+});
+
+test("recorded replay shares a cursor snapshot and advances without new commits", async () => {
+    const fake = fakeDependencies({
+        changedPathSequenceByRepository: {
+            [OPENAI_REPOSITORY]: [[], [], []],
+            [WRANGLER_REPOSITORY]: [[], [], []],
+        },
+        factoryRevisionsByVariant: {
+            openai: "factory-head",
+            wrangler: "factory-head",
+        },
+        replayByRevision: {
+            "factory-head": {
+                base: { revision: "factory-head" },
+                checkpoints: [],
+                tempRoot: "replay-temp:factory-head",
+            },
+        },
+    });
+    const results = await publishTemplates(
+        {
+            help: false,
+            history: "append",
+            replay: true,
+            variant: "all",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.deepEqual(
+        results.map(({ status, variant }) => ({ status, variant })),
+        [
+            { status: "unchanged", variant: "openai" },
+            { status: "unchanged", variant: "wrangler" },
+        ]
+    );
+    assert.equal(
+        fake.operations.filter(
+            (operation) => operation === "prepareReplay:factory-head"
+        ).length,
+        1
+    );
+    assert.equal(
+        fake.operations.filter(
+            (operation) => operation === "assertReplayBaseline:factory-head"
+        ).length,
+        1
+    );
+    assert.equal(
+        fake.operations.filter(
+            (operation) => operation === "cleanupReplay:replay-temp:factory-head"
+        ).length,
+        1
+    );
+    assert.equal(
+        fake.operations.some((operation) => operation.startsWith("push")),
+        false
+    );
+    assert.equal(
+        fake.operations.includes(
+            "recordFactoryRevision:openai:factory-head"
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            "recordFactoryRevision:wrangler:factory-head"
+        ),
+        true
+    );
+});
+
+test("recorded replay requires a bootstrapped factory cursor", async () => {
+    const fake = fakeDependencies({ exists: true });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                help: false,
+                history: "append",
+                replay: true,
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /Factory publication state has no revision.*--replay-from <revision>/
+    );
+    assert.equal(
+        fake.operations.includes("readFactoryRevision:openai"),
+        true
+    );
+    assert.equal(fake.operations.includes("generate"), false);
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith("prepareCheckout:")
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith("prepareReplay:")
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith("assertReplayBaseline:")
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.some((operation) => operation.startsWith("push")),
+        false
+    );
+});
+
+test("recorded replay validates cursors before clobber cleanup", async () => {
+    const backup = "/state/openai-backup.git";
+    const fake = fakeDependencies({
+        exists: true,
+        retainedBackupsByRepository: {
+            [OPENAI_REPOSITORY]: [backup],
+        },
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                clobber: true,
+                help: false,
+                history: "fresh",
+                replay: true,
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /Factory publication state has no revision/
+    );
+    assert.equal(fake.operations.includes("assertFactoryReady"), true);
+    assert.equal(fake.operations.includes("generate"), false);
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith("moveBackupsToTrash:")
+        ),
+        false
+    );
+});
+
+test("explicit replay validates its baseline before clobber cleanup", async () => {
+    const backup = "/state/openai-backup.git";
+    const fake = fakeDependencies({
+        exists: true,
+        replayBaselineError: new Error("Unknown replay baseline revision"),
+        retainedBackupsByRepository: {
+            [OPENAI_REPOSITORY]: [backup],
+        },
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                clobber: true,
+                help: false,
+                history: "fresh",
+                replayFrom: "missing",
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /Unknown replay baseline revision/
+    );
+    assert.equal(
+        fake.operations.includes("assertReplayBaseline:missing"),
+        true
+    );
+    assert.equal(fake.operations.includes("generate"), false);
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith("moveBackupsToTrash:")
+        ),
+        false
+    );
+});
+
+test("append replay refuses a baseline that does not match remote main", async () => {
+    const fake = fakeDependencies({
+        changedPathSequenceByRepository: {
+            [OPENAI_REPOSITORY]: [
+                ["README.md"],
+                ["unexpected.txt"],
+            ],
+        },
+        exists: true,
+        replay: {
+            base: { revision: "baseline" },
+            checkpoints: [
+                { message: "Add feature", revision: "feature" },
+            ],
+            tempRoot: "replay-temp",
+        },
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                help: false,
+                history: "append",
+                replayFrom: "baseline",
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /append replay baseline does not match remote main/
+    );
+    assert.equal(
+        fake.operations.some((operation) => operation.startsWith("commit:")),
+        false
+    );
+    assert.equal(
+        fake.operations.some((operation) => operation.startsWith("push")),
+        false
+    );
+    assert.equal(
+        fake.operations.includes("cleanupReplay:replay-temp"),
+        true
+    );
+});
+
+test("fresh replay creates a baseline root before curated checkpoints", async () => {
+    const fake = fakeDependencies({
+        changedPathSequenceByRepository: {
+            [OPENAI_REPOSITORY]: [
+                ["README.md"],
+                ["baseline.txt"],
+                ["feature.ts"],
+                [],
+                [],
+            ],
+        },
+        exists: true,
+        replay: {
+            base: { revision: "baseline" },
+            checkpoints: [
+                { message: "Add feature", revision: "feature" },
+                { message: "Change factory tooling", revision: "tooling" },
+            ],
+            tempRoot: "replay-temp",
+        },
+    });
+    const [result] = await publishTemplates(
+        {
+            help: false,
+            history: "fresh",
+            replayFrom: "baseline",
+            variant: "openai",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(result.status, "replaced");
+    assert.equal(result.commitCount, 2);
+    assert.equal(result.backup, `backup:${OPENAI_REPOSITORY}`);
+    const rootCommit = fake.operations.indexOf(
+        `commit:${OPENAI_REPOSITORY}:fresh:Initial commit:baseline.txt`
+    );
+    const featureCommit = fake.operations.indexOf(
+        `commit:${OPENAI_REPOSITORY}:append:Add feature:feature.ts`
+    );
+    const backup = fake.operations.indexOf(
+        `createMirrorBackup:${OPENAI_REPOSITORY}`
+    );
+    const push = fake.operations.indexOf(`pushFresh:${OPENAI_REPOSITORY}`);
+    assert.equal(rootCommit < featureCommit, true);
+    assert.equal(featureCommit < backup, true);
+    assert.equal(backup < push, true);
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.includes("Change factory tooling")
+            && operation.startsWith("commit:")
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.includes("log:openai  replaced (2 commits) (backup: backup:j-256/d1-r2-starter-openai)"),
+        true
+    );
+});
+
 test("publishTemplates processes both variants for an explicit all selection", async () => {
     const fake = fakeDependencies({ changedPaths: [], exists: true });
     const results = await publishTemplates(
@@ -726,6 +1741,18 @@ test("publishTemplates reports unchanged variants without staging", async () => 
     assert.equal(
         fake.operations.some((operation) => operation.startsWith("stage:")),
         false
+    );
+    assert.equal(
+        fake.operations.includes(
+            "recordFactoryRevision:openai:factory-head"
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            "recordFactoryRevision:wrangler:factory-head"
+        ),
+        true
     );
     assert.equal(fake.operations.includes("log:Nothing published."), true);
 });
@@ -999,7 +2026,10 @@ test("clobber replaces all histories and cleans old and verified mirrors", async
         true
     );
     assert.equal(oldCleanup < fake.operations.indexOf("generate"), true);
-    for (const repository of [OPENAI_REPOSITORY, WRANGLER_REPOSITORY]) {
+    for (const [variant, repository] of [
+        ["openai", OPENAI_REPOSITORY],
+        ["wrangler", WRANGLER_REPOSITORY],
+    ]) {
         assert.equal(
             fake.operations.includes(
                 `commit:${repository}:fresh:Initial commit:README.md`
@@ -1009,10 +2039,14 @@ test("clobber replaces all histories and cleans old and verified mirrors", async
         const verify = fake.operations.indexOf(
             `verifyPublished:${repository}`
         );
+        const record = fake.operations.indexOf(
+            `recordFactoryRevision:${variant}:factory-head`
+        );
         const cleanup = fake.operations.indexOf(
             `moveBackupsToTrash:backup:${repository}`
         );
-        assert.equal(verify < cleanup, true);
+        assert.equal(verify < record, true);
+        assert.equal(record < cleanup, true);
         assert.equal(
             fake.operations.includes(`confirmBackupCleanup:${repository}`),
             false
@@ -1103,6 +2137,48 @@ test("clobber retains a new mirror when remote verification fails", async () => 
     );
     assert.equal(
         fake.operations.includes(`createMirrorBackup:${OPENAI_REPOSITORY}`),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            `moveBackupsToTrash:backup:${OPENAI_REPOSITORY}`
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.includes(
+            "recordFactoryRevision:openai:factory-head"
+        ),
+        false
+    );
+});
+
+test("clobber retains a new mirror when factory state recording fails", async () => {
+    const fake = fakeDependencies({
+        exists: true,
+        recordError: new Error("state unavailable"),
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                clobber: true,
+                help: false,
+                history: "fresh",
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        new RegExp(
+            `verified factory revision was not recorded in factory state ${factoryRevisionVariable("openai")}`
+        )
+    );
+    assert.equal(
+        fake.operations.indexOf(`verifyPublished:${OPENAI_REPOSITORY}`)
+            < fake.operations.indexOf(
+                "recordFactoryRevision:openai:factory-head"
+            ),
         true
     );
     assert.equal(

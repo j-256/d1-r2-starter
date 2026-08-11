@@ -81,7 +81,7 @@ export const WRANGLER_PACKAGE_FILES = Object.freeze([
 ]);
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist"]);
-const COPY_EXCLUDED_NAMES = new Set([".DS_Store", ".git"]);
+const COPY_EXCLUDED_NAMES = new Set([".DS_Store", ".git", "node_modules"]);
 // Binary-ish extensions the content scan should skip (paths still checked)
 const BINARY_EXT = /\.(png|jpg|jpeg|gif|ico|woff2?|ttf|otf|webp)$/i;
 
