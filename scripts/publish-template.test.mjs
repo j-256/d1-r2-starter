@@ -13,6 +13,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
     createSystemDependencies,
+    historyModeChoices,
     isAffirmativeResponse,
     mergeChangedPaths,
     parseHttpStatus,
@@ -25,6 +26,7 @@ import {
 } from "./publish-template-lib.mjs";
 
 const UPDATE_MESSAGE = "Refresh generated template";
+const UPDATE_MESSAGE_WITH_BODY = `${UPDATE_MESSAGE}\n\nExplain the generated boundary`;
 const HTTP_NOT_FOUND = 404;
 const OPENAI_REPOSITORY = "j-256/d1-r2-starter-openai";
 const WRANGLER_REPOSITORY = "j-256/d1-r2-starter-wrangler";
@@ -60,10 +62,78 @@ function createTemplateRemote(root) {
     };
 }
 
+function createReplayFactory(root) {
+    const factory = join(root, "factory");
+    mkdirSync(join(factory, "scripts"), { recursive: true });
+    execFileSync("git", ["init", "-b", "main", factory]);
+    configureTestGit(factory);
+    writeFileSync(
+        join(factory, "scripts", "generate.mjs"),
+        [
+            'import { cpSync, mkdirSync, rmSync } from "node:fs";',
+            'rmSync("dist", { force: true, recursive: true });',
+            'for (const variant of ["openai", "wrangler"]) {',
+            '    const output = `dist/${variant}`;',
+            '    mkdirSync(output, { recursive: true });',
+            '    cpSync("template.txt", `${output}/template.txt`);',
+            '}',
+            '',
+        ].join("\n")
+    );
+    writeFileSync(
+        join(factory, "package.json"),
+        `${JSON.stringify({
+            private: true,
+            scripts: { generate: "node scripts/generate.mjs" },
+        }, null, 2)}\n`
+    );
+    writeFileSync(join(factory, "template.txt"), "baseline\n");
+    runGit(factory, [
+        "add",
+        "--",
+        "package.json",
+        "scripts/generate.mjs",
+        "template.txt",
+    ]);
+    runGit(factory, [
+        "commit",
+        "-m",
+        "Establish template baseline",
+        "--",
+        "package.json",
+        "scripts/generate.mjs",
+        "template.txt",
+    ]);
+    const baseline = runGit(factory, ["rev-parse", "HEAD"]).trim();
+
+    writeFileSync(join(factory, "template.txt"), "feature\n");
+    runGit(factory, ["add", "--", "template.txt"]);
+    runGit(factory, [
+        "commit",
+        "-m",
+        "Add generated feature",
+        "-m",
+        "Explain the feature boundary",
+        "--",
+        "template.txt",
+    ]);
+    writeFileSync(join(factory, "factory-only.txt"), "publisher\n");
+    runGit(factory, ["add", "--", "factory-only.txt"]);
+    runGit(factory, [
+        "commit",
+        "-m",
+        "Change factory tooling",
+        "--",
+        "factory-only.txt",
+    ]);
+    return { baseline, factory };
+}
+
 function fakeDependencies(options = {}) {
     const operations = [];
     const defaultChangedPaths = options.changedPaths ?? ["README.md"];
     const defaultExists = options.exists ?? true;
+    const changedPathCallCounts = new Map();
     const trashedBackups = new Set();
 
     return {
@@ -73,6 +143,14 @@ function fakeDependencies(options = {}) {
             },
             async generate() {
                 operations.push("generate");
+            },
+            async prepareReplay({ from }) {
+                operations.push(`prepareReplay:${from}`);
+                return options.replay ?? {
+                    base: { revision: "baseline" },
+                    checkpoints: [],
+                    tempRoot: "replay-temp",
+                };
             },
             async repositoryExists(repository) {
                 operations.push(`repositoryExists:${repository}`);
@@ -91,8 +169,21 @@ function fakeDependencies(options = {}) {
             async syncGeneratedTree(outputDirectory, checkout) {
                 operations.push(`sync:${outputDirectory}:${checkout}`);
             },
+            async syncReplayTree({ checkout, snapshot }) {
+                operations.push(
+                    `syncReplay:${snapshot.revision}:${checkout}`
+                );
+            },
             async collectChangedPaths(checkout) {
                 operations.push(`collectChangedPaths:${checkout}`);
+                const call = changedPathCallCounts.get(checkout) ?? 0;
+                changedPathCallCounts.set(checkout, call + 1);
+                const sequence = options.changedPathSequenceByRepository?.[
+                    checkout
+                ];
+                if (sequence && call < sequence.length) {
+                    return sequence[call];
+                }
                 return options.changedPathsByRepository?.[checkout]
                     ?? defaultChangedPaths;
             },
@@ -102,14 +193,25 @@ function fakeDependencies(options = {}) {
             async showStagedDiff(checkout) {
                 operations.push(`showStagedDiff:${checkout}`);
             },
-            async confirm({ history, repository }) {
+            async showCreatedCommit(checkout, commit) {
+                operations.push(`showCreatedCommit:${checkout}:${commit}`);
+            },
+            async confirm({ commitCount, history, repository }) {
                 operations.push(`confirm:${repository}:${history ?? "create"}`);
+                if (commitCount !== undefined) {
+                    operations.push(
+                        `confirmCommitCount:${repository}:${commitCount}`
+                    );
+                }
                 return options.confirmedByRepository?.[repository]
                     ?? options.confirmed
                     ?? true;
             },
-            async requestHistoryMode({ repository }) {
+            async requestHistoryMode({ replay, repository }) {
                 operations.push(`requestHistoryMode:${repository}`);
+                operations.push(
+                    `requestHistoryReplay:${repository}:${replay ?? false}`
+                );
                 return options.historyByRepository?.[repository]
                     ?? options.requestedHistory
                     ?? "append";
@@ -173,6 +275,9 @@ function fakeDependencies(options = {}) {
             async cleanup(workspace) {
                 operations.push(`cleanup:${workspace.checkout}`);
             },
+            async cleanupReplay(replay) {
+                operations.push(`cleanupReplay:${replay.tempRoot}`);
+            },
             log(message) {
                 operations.push(`log:${message}`);
             },
@@ -191,6 +296,7 @@ test("parsePublishArguments requires an explicit template target", () => {
         help: false,
         history: undefined,
         message: undefined,
+        replayFrom: undefined,
         variant: "all",
         yes: false,
     });
@@ -214,6 +320,7 @@ test("parsePublishArguments accepts a variant, history, message, and confirmatio
             help: false,
             history: "fresh",
             message: UPDATE_MESSAGE,
+            replayFrom: undefined,
             variant: "openai",
             yes: true,
         }
@@ -228,6 +335,7 @@ test("parsePublishArguments expands clobber to fresh history", () => {
             help: false,
             history: "fresh",
             message: undefined,
+            replayFrom: undefined,
             variant: "all",
             yes: true,
         }
@@ -246,6 +354,38 @@ test("parsePublishArguments expands clobber to fresh history", () => {
 test("parsePublishArguments accepts explicit all and both selections", () => {
     assert.equal(parsePublishArguments(["all"]).variant, "all");
     assert.equal(parsePublishArguments(["both"]).variant, "all");
+});
+
+test("parsePublishArguments accepts checkpoint replay without a message override", () => {
+    assert.deepEqual(
+        parsePublishArguments([
+            "all",
+            "--history",
+            "fresh",
+            "--replay-from",
+            "main~3",
+            "--yes",
+        ]),
+        {
+            clobber: false,
+            help: false,
+            history: "fresh",
+            message: undefined,
+            replayFrom: "main~3",
+            variant: "all",
+            yes: true,
+        }
+    );
+    assert.throws(
+        () => parsePublishArguments([
+            "openai",
+            "--replay-from",
+            "main~3",
+            "--message",
+            UPDATE_MESSAGE,
+        ]),
+        /cannot be combined with --replay-from/
+    );
 });
 
 test("parsePublishArguments rejects unknown variants and malformed options", () => {
@@ -269,6 +409,7 @@ test("publishUsage documents history modes and persistent backups", () => {
     assert.match(usage, /both is an alias/);
     assert.match(usage, /--history append\|fresh/);
     assert.match(usage, /--clobber/);
+    assert.match(usage, /--replay-from/);
     assert.match(usage, /root commits default to Initial commit/);
     assert.match(usage, /existing repos need history or clobber/);
     assert.match(usage, /TEMPLATE_PUBLISH_BACKUP_DIR/);
@@ -309,6 +450,35 @@ test("publicationConfirmationQuestion names each target and action", () => {
         }),
         `Replace main in ${OPENAI_REPOSITORY} with a fresh root commit and force-push? [y/N] `
     );
+    assert.equal(
+        publicationConfirmationQuestion({
+            action: "update",
+            commitCount: 3,
+            history: "append",
+            repository: OPENAI_REPOSITORY,
+        }),
+        `Append and publish 3 commits to ${OPENAI_REPOSITORY}? [y/N] `
+    );
+    assert.equal(
+        publicationConfirmationQuestion({
+            action: "replace",
+            commitCount: 1,
+            history: "fresh",
+            repository: OPENAI_REPOSITORY,
+        }),
+        `Replace main in ${OPENAI_REPOSITORY} with a fresh history of 1 commit and force-push? [y/N] `
+    );
+});
+
+test("historyModeChoices describe normal and replay publications accurately", () => {
+    assert.deepEqual(historyModeChoices(), [
+        "  1. append (recommended): preserve main, then add one update commit",
+        "  2. fresh: replace main with one new root commit",
+    ]);
+    assert.deepEqual(historyModeChoices({ replay: true }), [
+        "  1. append (recommended): preserve main, then add relevant factory checkpoints",
+        "  2. fresh: replace main with a baseline root plus relevant checkpoints",
+    ]);
 });
 
 test("resolveCommitMessage defaults for root commits only", () => {
@@ -412,15 +582,72 @@ test("system dependencies stage and commit explicit generated paths", async () =
             changedPaths: paths,
             checkout: workspace.checkout,
             history: undefined,
-            message: "Initial commit",
+            message: UPDATE_MESSAGE_WITH_BODY,
         });
         assert.match(commit, /^[0-9a-f]{40,64}$/);
         assert.equal(
             runGit(workspace.checkout, ["status", "--porcelain=v1"]),
             ""
         );
+        assert.equal(
+            runGit(workspace.checkout, ["log", "-1", "--format=%B"]).trim(),
+            UPDATE_MESSAGE_WITH_BODY
+        );
     } finally {
         if (workspace) await dependencies.cleanup(workspace);
+        rmSync(root, { force: true, recursive: true });
+    }
+});
+
+test("system dependencies generate first-parent replay snapshots and preserve message bodies", async () => {
+    const root = tempTree();
+    let replay;
+    try {
+        const { baseline, factory } = createReplayFactory(root);
+        const dependencies = createSystemDependencies(factory);
+        replay = await dependencies.prepareReplay({ from: baseline });
+
+        assert.equal(replay.base.revision, baseline);
+        assert.equal(replay.checkpoints.length, 2);
+        assert.equal(
+            replay.checkpoints[0].message,
+            "Add generated feature\n\nExplain the feature boundary"
+        );
+        assert.equal(
+            readFileSync(
+                join(replay.base.root, "dist", "openai", "template.txt"),
+                "utf8"
+            ),
+            "baseline\n"
+        );
+        assert.equal(
+            readFileSync(
+                join(
+                    replay.checkpoints[0].root,
+                    "dist",
+                    "wrangler",
+                    "template.txt"
+                ),
+                "utf8"
+            ),
+            "feature\n"
+        );
+        assert.equal(
+            readFileSync(
+                join(
+                    replay.checkpoints[1].root,
+                    "dist",
+                    "openai",
+                    "template.txt"
+                ),
+                "utf8"
+            ),
+            "feature\n"
+        );
+        await dependencies.cleanupReplay(replay);
+        replay = undefined;
+    } finally {
+        if (replay) rmSync(replay.tempRoot, { force: true, recursive: true });
         rmSync(root, { force: true, recursive: true });
     }
 });
@@ -651,6 +878,248 @@ test("publishTemplates compares both variants before publishing and runs setup o
     );
     assert.equal(fake.operations.includes("log:openai    updated"), true);
     assert.equal(fake.operations.includes("log:wrangler  updated"), true);
+});
+
+test("checkpoint replay preserves relevant factory commits and pushes each template once", async () => {
+    const replay = {
+        base: { revision: "baseline" },
+        checkpoints: [
+            {
+                message: "Add shared platform",
+                revision: "shared",
+            },
+            {
+                message: "Clarify Sites development",
+                revision: "openai-docs",
+            },
+            {
+                message: "Add complete interfaces\n\nKeep each runtime native",
+                revision: "interfaces",
+            },
+        ],
+        tempRoot: "replay-temp",
+    };
+    const fake = fakeDependencies({
+        changedPathSequenceByRepository: {
+            [OPENAI_REPOSITORY]: [
+                ["README.md"],
+                [],
+                ["platform.ts"],
+                ["README.md"],
+                ["app/page.tsx"],
+                [],
+            ],
+            [WRANGLER_REPOSITORY]: [
+                ["README.md"],
+                [],
+                ["platform.ts"],
+                [],
+                ["public/index.html"],
+                [],
+            ],
+        },
+        exists: true,
+        replay,
+    });
+    const results = await publishTemplates(
+        {
+            help: false,
+            replayFrom: "baseline",
+            variant: "all",
+            yes: false,
+        },
+        fake.dependencies
+    );
+
+    assert.deepEqual(
+        results.map(({ commitCount, status, variant }) => ({
+            commitCount,
+            status,
+            variant,
+        })),
+        [
+            { commitCount: 3, status: "updated", variant: "openai" },
+            { commitCount: 2, status: "updated", variant: "wrangler" },
+        ]
+    );
+    assert.equal(
+        fake.operations.filter(
+            (operation) => operation === "prepareReplay:baseline"
+        ).length,
+        1
+    );
+    assert.equal(
+        fake.operations.includes(
+            `commit:${OPENAI_REPOSITORY}:append:Clarify Sites development:README.md`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith(
+                `commit:${WRANGLER_REPOSITORY}:append:Clarify Sites development:`
+            )
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.includes(
+            `commit:${WRANGLER_REPOSITORY}:append:Add complete interfaces\n\nKeep each runtime native:public/index.html`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.filter(
+            (operation) => operation === `pushUpdate:${OPENAI_REPOSITORY}`
+        ).length,
+        1
+    );
+    assert.equal(
+        fake.operations.filter(
+            (operation) => operation === `pushUpdate:${WRANGLER_REPOSITORY}`
+        ).length,
+        1
+    );
+    assert.equal(
+        fake.operations.includes(
+            `confirmCommitCount:${OPENAI_REPOSITORY}:3`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            `confirmCommitCount:${WRANGLER_REPOSITORY}:2`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            `requestHistoryReplay:${OPENAI_REPOSITORY}:true`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            `requestHistoryReplay:${WRANGLER_REPOSITORY}:true`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.includes("cleanupReplay:replay-temp"),
+        true
+    );
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith("requestCommitMessage:")
+        ),
+        false
+    );
+});
+
+test("append replay refuses a baseline that does not match remote main", async () => {
+    const fake = fakeDependencies({
+        changedPathSequenceByRepository: {
+            [OPENAI_REPOSITORY]: [
+                ["README.md"],
+                ["unexpected.txt"],
+            ],
+        },
+        exists: true,
+        replay: {
+            base: { revision: "baseline" },
+            checkpoints: [
+                { message: "Add feature", revision: "feature" },
+            ],
+            tempRoot: "replay-temp",
+        },
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                help: false,
+                history: "append",
+                replayFrom: "baseline",
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /append replay baseline does not match remote main/
+    );
+    assert.equal(
+        fake.operations.some((operation) => operation.startsWith("commit:")),
+        false
+    );
+    assert.equal(
+        fake.operations.some((operation) => operation.startsWith("push")),
+        false
+    );
+    assert.equal(
+        fake.operations.includes("cleanupReplay:replay-temp"),
+        true
+    );
+});
+
+test("fresh replay creates a baseline root before curated checkpoints", async () => {
+    const fake = fakeDependencies({
+        changedPathSequenceByRepository: {
+            [OPENAI_REPOSITORY]: [
+                ["README.md"],
+                ["baseline.txt"],
+                ["feature.ts"],
+                [],
+                [],
+            ],
+        },
+        exists: true,
+        replay: {
+            base: { revision: "baseline" },
+            checkpoints: [
+                { message: "Add feature", revision: "feature" },
+                { message: "Change factory tooling", revision: "tooling" },
+            ],
+            tempRoot: "replay-temp",
+        },
+    });
+    const [result] = await publishTemplates(
+        {
+            help: false,
+            history: "fresh",
+            replayFrom: "baseline",
+            variant: "openai",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(result.status, "replaced");
+    assert.equal(result.commitCount, 2);
+    assert.equal(result.backup, `backup:${OPENAI_REPOSITORY}`);
+    const rootCommit = fake.operations.indexOf(
+        `commit:${OPENAI_REPOSITORY}:fresh:Initial commit:baseline.txt`
+    );
+    const featureCommit = fake.operations.indexOf(
+        `commit:${OPENAI_REPOSITORY}:append:Add feature:feature.ts`
+    );
+    const backup = fake.operations.indexOf(
+        `createMirrorBackup:${OPENAI_REPOSITORY}`
+    );
+    const push = fake.operations.indexOf(`pushFresh:${OPENAI_REPOSITORY}`);
+    assert.equal(rootCommit < featureCommit, true);
+    assert.equal(featureCommit < backup, true);
+    assert.equal(backup < push, true);
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.includes("Change factory tooling")
+            && operation.startsWith("commit:")
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.includes("log:openai  replaced (2 commits) (backup: backup:j-256/d1-r2-starter-openai)"),
+        true
+    );
 });
 
 test("publishTemplates processes both variants for an explicit all selection", async () => {

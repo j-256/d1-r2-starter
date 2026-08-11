@@ -36,6 +36,7 @@ const HISTORY_MODES = Object.freeze({
 const INITIAL_COMMIT_MESSAGE = "Initial commit";
 const NOT_FOUND_STATUS = 404;
 const PUBLISH_TEMP_PREFIX = "d1-r2-template-publish-";
+const REPLAY_TEMP_PREFIX = "d1-r2-template-replay-";
 const PUBLICATION_ACTIONS = Object.freeze({
     create: "create",
     replace: "replace",
@@ -61,9 +62,20 @@ export function isAffirmativeResponse(response) {
 
 export function publicationConfirmationQuestion({
     action,
+    commitCount,
     history,
     repository,
 }) {
+    if (commitCount !== undefined) {
+        const commits = `${commitCount} ${commitCount === 1 ? "commit" : "commits"}`;
+        if (history === HISTORY_MODES.fresh) {
+            return `Replace main in ${repository} with a fresh history of ${commits} and force-push? [y/N] `;
+        }
+        if (action === PUBLICATION_ACTIONS.create) {
+            return `Create and publish ${repository} with ${commits}? [y/N] `;
+        }
+        return `Append and publish ${commits} to ${repository}? [y/N] `;
+    }
     if (history === HISTORY_MODES.fresh) {
         return `Replace main in ${repository} with a fresh root commit and force-push? [y/N] `;
     }
@@ -71,6 +83,19 @@ export function publicationConfirmationQuestion({
         return `Create and publish ${repository}? [y/N] `;
     }
     return `Append and publish a commit to ${repository}? [y/N] `;
+}
+
+export function historyModeChoices({ replay = false } = {}) {
+    if (replay) {
+        return [
+            "  1. append (recommended): preserve main, then add relevant factory checkpoints",
+            "  2. fresh: replace main with a baseline root plus relevant checkpoints",
+        ];
+    }
+    return [
+        "  1. append (recommended): preserve main, then add one update commit",
+        "  2. fresh: replace main with one new root commit",
+    ];
 }
 
 function commandFailure(command, args, result) {
@@ -88,7 +113,10 @@ function runCommand(command, args, options = {}) {
     const result = spawnSync(command, args, {
         cwd: options.cwd,
         encoding: "utf8",
-        stdio: options.inherit ? "inherit" : ["ignore", "pipe", "pipe"],
+        input: options.input,
+        stdio: options.inherit
+            ? "inherit"
+            : [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
     if (result.error) throw result.error;
     if (result.status !== 0 && !options.allowFailure) {
@@ -123,6 +151,7 @@ export function parsePublishArguments(args) {
     let help = false;
     let history;
     let message;
+    let replayFrom;
     let variant;
     let yes = false;
 
@@ -162,6 +191,19 @@ export function parsePublishArguments(args) {
             index += 1;
             continue;
         }
+        if (argument === "--replay-from") {
+            const candidate = args[index + 1];
+            if (!candidate || candidate.startsWith("-")) {
+                throw new Error("--replay-from requires a factory revision.");
+            }
+            replayFrom = candidate;
+            index += 1;
+            continue;
+        }
+        if (argument?.startsWith("--replay-from=")) {
+            replayFrom = argument.slice("--replay-from=".length);
+            continue;
+        }
         if (argument?.startsWith("--message=")) {
             message = argument.slice("--message=".length);
             continue;
@@ -192,6 +234,14 @@ export function parsePublishArguments(args) {
     if (message !== undefined && !message.trim()) {
         throw new Error("--message cannot be empty.");
     }
+    if (replayFrom !== undefined && !replayFrom.trim()) {
+        throw new Error("--replay-from cannot be empty.");
+    }
+    if (replayFrom !== undefined && message !== undefined) {
+        throw new Error(
+            "--message cannot be combined with --replay-from because replay preserves factory commit messages."
+        );
+    }
     if (clobber && history === HISTORY_MODES.append) {
         throw new Error("--clobber cannot be combined with --history append.");
     }
@@ -205,6 +255,7 @@ export function parsePublishArguments(args) {
         help: false,
         history,
         message: message?.trim(),
+        replayFrom: replayFrom?.trim(),
         variant,
         yes,
     };
@@ -213,14 +264,15 @@ export function parsePublishArguments(args) {
 export function publishUsage() {
     return [
         "Usage:",
-        "  npm run template:publish -- <all|openai|wrangler> [--history append|fresh] [--clobber] [--message <message>] [--yes]",
+        "  npm run template:publish -- <all|openai|wrangler> [--history append|fresh] [--clobber] [--message <message>] [--replay-from <revision>] [--yes]",
         "",
         "Options:",
         "  all                  Process both templates explicitly; both is an alias",
         "  openai|wrangler      Limit publication to one template",
-        "  --history <mode>     Append a commit or replace main with a fresh root",
+        "  --history <mode>     Append to main or replace it with fresh history",
         "  --clobber            Replace history and Trash selected recovery mirrors",
-        "  --message <message>  Override the commit message; root commits default to Initial commit",
+        "  --message <message>  Set the normal publication message; root commits default to Initial commit",
+        "  --replay-from <rev>   Replay first-parent factory checkpoints after a generated baseline",
         "  --yes                Authorize without prompts; existing repos need history or clobber",
         "  --help               Show this help",
         "",
@@ -382,8 +434,11 @@ function logSummary(dependencies, results) {
             : result.backupTrashed
                 ? " (backup moved to Trash)"
                 : "";
+        const commits = result.commitCount === undefined
+            ? ""
+            : ` (${result.commitCount} ${result.commitCount === 1 ? "commit" : "commits"})`;
         dependencies.log(
-            `${result.variant.padEnd(labelWidth)}${result.status}${backup}`
+            `${result.variant.padEnd(labelWidth)}${result.status}${commits}${backup}`
         );
     }
     if (results.some(({ backup }) => backup)) {
@@ -432,6 +487,7 @@ async function historyModeFor(plan, options, dependencies) {
         );
     }
     const history = await dependencies.requestHistoryMode({
+        replay: options.replayFrom !== undefined,
         repository: plan.config.repository,
     });
     if (!Object.hasOwn(HISTORY_MODES, history)) {
@@ -470,6 +526,128 @@ function publicationStatus(plan, history) {
         : PUBLICATION_STATUSES.updated;
 }
 
+function commitSubject(message) {
+    return message.split("\n", 1)[0]?.trim() || "Untitled checkpoint";
+}
+
+function logCommitMessage(dependencies, label, message) {
+    dependencies.log(`${label}:`);
+    for (const line of message.split("\n")) {
+        dependencies.log(`  ${line}`);
+    }
+}
+
+async function stageReplaySnapshot(plan, snapshot, dependencies) {
+    await dependencies.syncReplayTree({
+        checkout: plan.workspace.checkout,
+        outputDirectory: plan.config.outputDirectory,
+        snapshot,
+    });
+    const changedPaths = await dependencies.collectChangedPaths(
+        plan.workspace.checkout
+    );
+    if (changedPaths.length > 0) {
+        await dependencies.stagePaths(
+            plan.workspace.checkout,
+            changedPaths
+        );
+    }
+    return changedPaths;
+}
+
+async function materializeReplayCommits(
+    plan,
+    replay,
+    history,
+    dependencies
+) {
+    const checkout = plan.workspace.checkout;
+    let commit = plan.workspace.remoteCommit;
+    let commitCount = 0;
+    const baselinePaths = await stageReplaySnapshot(
+        plan,
+        replay.base,
+        dependencies
+    );
+
+    if (plan.exists && history !== HISTORY_MODES.fresh) {
+        if (baselinePaths.length > 0) {
+            throw new Error([
+                `${plan.config.repository}: append replay baseline does not match remote main.`,
+                "Choose the factory revision that generated the published tree, or use fresh history to replace it.",
+                `Mismatched paths: ${baselinePaths.join(", ")}`,
+            ].join("\n"));
+        }
+        dependencies.log(
+            `${plan.variant}: replay baseline matches remote main`
+        );
+    } else {
+        logCommitMessage(
+            dependencies,
+            "Baseline commit message",
+            INITIAL_COMMIT_MESSAGE
+        );
+        await dependencies.showStagedDiff(checkout);
+        commit = await dependencies.createCommit({
+            changedPaths: baselinePaths,
+            checkout,
+            expectedCommit: plan.workspace.remoteCommit,
+            history: plan.exists ? HISTORY_MODES.fresh : undefined,
+            message: INITIAL_COMMIT_MESSAGE,
+        });
+        await dependencies.showCreatedCommit(checkout, commit);
+        commitCount += 1;
+    }
+
+    for (const checkpoint of replay.checkpoints) {
+        const changedPaths = await stageReplaySnapshot(
+            plan,
+            checkpoint,
+            dependencies
+        );
+        if (changedPaths.length === 0) {
+            dependencies.log(
+                `Skip checkpoint for ${plan.variant}: ${commitSubject(checkpoint.message)}`
+            );
+            continue;
+        }
+        logCommitMessage(
+            dependencies,
+            "Checkpoint commit message",
+            checkpoint.message
+        );
+        await dependencies.showStagedDiff(checkout);
+        commit = await dependencies.createCommit({
+            changedPaths,
+            checkout,
+            history: HISTORY_MODES.append,
+            message: checkpoint.message,
+        });
+        commitCount += 1;
+    }
+
+    await dependencies.syncGeneratedTree(
+        plan.config.outputDirectory,
+        checkout
+    );
+    const finalPaths = await dependencies.collectChangedPaths(checkout);
+    if (finalPaths.length > 0) {
+        throw new Error([
+            `${plan.config.repository}: replay did not reproduce the generated HEAD tree.`,
+            `Mismatched paths: ${finalPaths.join(", ")}`,
+        ].join("\n"));
+    }
+    if (!commit) {
+        throw new Error(
+            `${plan.config.repository}: replay did not produce a publishable commit.`
+        );
+    }
+    dependencies.log(
+        `${plan.variant}: replay prepared ${commitCount} ${commitCount === 1 ? "commit" : "commits"}`
+    );
+    return { commit, commitCount };
+}
+
 export async function publishTemplates(options, dependencies) {
     const variants = selectedVariants(options.variant);
     if (options.clobber && options.history !== HISTORY_MODES.fresh) {
@@ -497,9 +675,20 @@ export async function publishTemplates(options, dependencies) {
     await dependencies.generate();
     dependencies.log("Factory checks and template generation passed.");
 
-    logPhase(dependencies, "Compare templates");
+    let replay;
     const plans = [];
     try {
+        if (options.replayFrom) {
+            logPhase(dependencies, "Prepare checkpoint replay");
+            replay = await dependencies.prepareReplay({
+                from: options.replayFrom,
+            });
+            dependencies.log(
+                `Prepared a generated baseline and ${replay.checkpoints.length} factory checkpoints.`
+            );
+        }
+
+        logPhase(dependencies, "Compare templates");
         for (const variant of variants) {
             const config = TEMPLATE_VARIANTS[variant];
             const exists = await dependencies.repositoryExists(
@@ -530,7 +719,8 @@ export async function publishTemplates(options, dependencies) {
 
             const explicitFresh = exists
                 && options.history === HISTORY_MODES.fresh;
-            const requiresPublication = changedPaths.length > 0
+            const requiresPublication = replay !== undefined
+                || changedPaths.length > 0
                 || explicitFresh;
             const plan = {
                 changedPaths,
@@ -543,6 +733,8 @@ export async function publishTemplates(options, dependencies) {
             plans.push(plan);
             if (!requiresPublication) {
                 dependencies.log(`${variant}: unchanged`);
+            } else if (replay) {
+                dependencies.log(`${variant}: checkpoint replay ready`);
             } else if (changedPaths.length === 0) {
                 dependencies.log(`${variant}: fresh history ready`);
             } else if (exists) {
@@ -572,17 +764,19 @@ export async function publishTemplates(options, dependencies) {
             dependencies.log(
                 `${plan.variant}: publish ${plan.config.repository}`
             );
-            if (plan.changedPaths.length > 0) {
-                await dependencies.stagePaths(
-                    plan.workspace.checkout,
-                    plan.changedPaths
-                );
-            }
-            await dependencies.showStagedDiff(plan.workspace.checkout);
-            if (plan.changedPaths.length === 0) {
-                dependencies.log(
-                    "Generated files are unchanged; fresh mode will replace history with the same tree."
-                );
+            if (!replay) {
+                if (plan.changedPaths.length > 0) {
+                    await dependencies.stagePaths(
+                        plan.workspace.checkout,
+                        plan.changedPaths
+                    );
+                }
+                await dependencies.showStagedDiff(plan.workspace.checkout);
+                if (plan.changedPaths.length === 0) {
+                    dependencies.log(
+                        "Generated files are unchanged; fresh mode will replace history with the same tree."
+                    );
+                }
             }
             const history = await historyModeFor(
                 plan,
@@ -592,14 +786,37 @@ export async function publishTemplates(options, dependencies) {
             const action = publicationAction(plan, history);
             if (history) dependencies.log(`History mode: ${history}`);
             await assertFreshBackupAvailable(plan, history, dependencies);
-            const commitMessage = await commitMessageFor(
-                plan,
-                history,
-                options,
-                dependencies
-            );
+            let commit;
+            let commitCount;
+            let commitMessage;
+            if (replay) {
+                ({ commit, commitCount } = await materializeReplayCommits(
+                    plan,
+                    replay,
+                    history,
+                    dependencies
+                ));
+                if (commitCount === 0) {
+                    dependencies.log(`${plan.variant}: unchanged`);
+                    results.push({
+                        action,
+                        repository: plan.config.repository,
+                        status: PUBLICATION_STATUSES.unchanged,
+                        variant: plan.variant,
+                    });
+                    continue;
+                }
+            } else {
+                commitMessage = await commitMessageFor(
+                    plan,
+                    history,
+                    options,
+                    dependencies
+                );
+            }
             const confirmed = options.yes || await dependencies.confirm({
                 action,
+                commitCount,
                 history,
                 repository: plan.config.repository,
             });
@@ -622,13 +839,15 @@ export async function publishTemplates(options, dependencies) {
                 });
                 dependencies.log(`Mirror backup created at ${backup}`);
             }
-            const commit = await dependencies.createCommit({
-                changedPaths: plan.changedPaths,
-                checkout: plan.workspace.checkout,
-                expectedCommit: plan.workspace.remoteCommit,
-                history,
-                message: commitMessage,
-            });
+            if (!replay) {
+                commit = await dependencies.createCommit({
+                    changedPaths: plan.changedPaths,
+                    checkout: plan.workspace.checkout,
+                    expectedCommit: plan.workspace.remoteCommit,
+                    history,
+                    message: commitMessage,
+                });
+            }
             if (plan.exists) {
                 if (history === HISTORY_MODES.fresh) {
                     await dependencies.pushFresh({
@@ -693,6 +912,7 @@ export async function publishTemplates(options, dependencies) {
                 backup,
                 backupTrashed,
                 commit,
+                commitCount,
                 repository: plan.config.repository,
                 status,
                 variant: plan.variant,
@@ -709,6 +929,7 @@ export async function publishTemplates(options, dependencies) {
         await Promise.all(
             workspaces.map((workspace) => dependencies.cleanup(workspace))
         );
+        if (replay) await dependencies.cleanupReplay(replay);
     }
 }
 
@@ -760,6 +981,111 @@ export function createSystemDependencies(repoRoot) {
         async generate() {
             inherited("npm", ["run", "test:generate"], repoRoot);
             inherited("npm", ["run", "generate"], repoRoot);
+        },
+
+        async prepareReplay({ from }) {
+            const resolved = runCommand(
+                "git",
+                ["rev-parse", "--verify", `${from}^{commit}`],
+                { allowFailure: true, cwd: repoRoot }
+            );
+            if (resolved.status !== 0) {
+                throw new Error(`Unknown replay baseline revision: ${from}`);
+            }
+            const baseRevision = resolved.stdout.trim();
+            const revisions = captured(
+                "git",
+                [
+                    "rev-list",
+                    "--reverse",
+                    "--first-parent",
+                    `${baseRevision}..HEAD`,
+                ],
+                { cwd: repoRoot }
+            ).trim().split("\n").filter(Boolean);
+            if (revisions.length === 0) {
+                throw new Error(
+                    "Checkpoint replay requires at least one factory commit after the baseline."
+                );
+            }
+
+            let previousRevision = baseRevision;
+            for (const revision of revisions) {
+                const firstParent = captured(
+                    "git",
+                    ["rev-parse", `${revision}^1`],
+                    { cwd: repoRoot }
+                ).trim();
+                if (firstParent !== previousRevision) {
+                    throw new Error(
+                        "The replay baseline must be on HEAD's uninterrupted first-parent history."
+                    );
+                }
+                previousRevision = revision;
+            }
+
+            const tempRoot = mkdtempSync(join(tmpdir(), REPLAY_TEMP_PREFIX));
+            const snapshot = (revision, name) => {
+                const root = join(tempRoot, name);
+                const archive = join(tempRoot, `${name}.tar`);
+                mkdirSync(root);
+                try {
+                    runCommand(
+                        "git",
+                        [
+                            "archive",
+                            "--format=tar",
+                            `--output=${archive}`,
+                            revision,
+                        ],
+                        { cwd: repoRoot }
+                    );
+                    runCommand(
+                        "tar",
+                        ["-xf", archive, "-C", root],
+                        { cwd: repoRoot }
+                    );
+                } finally {
+                    rmSync(archive, { force: true });
+                }
+                inherited("npm", ["run", "generate"], root);
+                return { revision, root };
+            };
+
+            try {
+                const base = snapshot(baseRevision, "baseline");
+                const checkpoints = revisions.map((revision, index) => {
+                    const message = captured(
+                        "git",
+                        ["show", "-s", "--format=%B", revision],
+                        { cwd: repoRoot }
+                    ).trim();
+                    if (!message) {
+                        throw new Error(
+                            "A factory checkpoint selected for replay has an empty commit message."
+                        );
+                    }
+                    return {
+                        ...snapshot(revision, `checkpoint-${index + 1}`),
+                        message,
+                    };
+                });
+                return { base, checkpoints, tempRoot };
+            } catch (error) {
+                rmSync(tempRoot, { force: true, recursive: true });
+                throw error;
+            }
+        },
+
+        async syncReplayTree({ checkout, outputDirectory, snapshot }) {
+            syncGeneratedTree(
+                join(snapshot.root, outputDirectory),
+                checkout
+            );
+        },
+
+        async cleanupReplay(replay) {
+            rmSync(replay.tempRoot, { force: true, recursive: true });
         },
 
         async repositoryExists(repository) {
@@ -869,7 +1195,39 @@ export function createSystemDependencies(repoRoot) {
             );
         },
 
-        async confirm({ action, history, repository }) {
+        async showCreatedCommit(checkout, commit) {
+            inherited(
+                "git",
+                [
+                    "-C",
+                    checkout,
+                    "diff-tree",
+                    "--check",
+                    "--root",
+                    "-r",
+                    commit,
+                    "--",
+                ],
+                repoRoot
+            );
+            inherited(
+                "git",
+                [
+                    "-C",
+                    checkout,
+                    "--no-pager",
+                    "show",
+                    "--root",
+                    "--binary",
+                    "--format=fuller",
+                    commit,
+                    "--",
+                ],
+                repoRoot
+            );
+        },
+
+        async confirm({ action, commitCount, history, repository }) {
             if (!process.stdin.isTTY || !process.stdout.isTTY) {
                 throw new Error(
                     "Interactive confirmation requires a terminal. Pass --yes for an intentional non-interactive publication."
@@ -884,6 +1242,7 @@ export function createSystemDependencies(repoRoot) {
                 const answer = await readline.question(
                     publicationConfirmationQuestion({
                         action,
+                        commitCount,
                         history,
                         repository,
                     })
@@ -894,7 +1253,7 @@ export function createSystemDependencies(repoRoot) {
             }
         },
 
-        async requestHistoryMode({ repository }) {
+        async requestHistoryMode({ replay, repository }) {
             if (!process.stdin.isTTY || !process.stdout.isTTY) {
                 throw new Error(
                     `Choosing history for ${repository} requires a terminal. Pass --history for a non-interactive publication.`
@@ -907,8 +1266,9 @@ export function createSystemDependencies(repoRoot) {
             });
             try {
                 console.log(`History mode for ${repository}:`);
-                console.log("  1. append (recommended): add a normal commit");
-                console.log("  2. fresh: replace main with one new root commit");
+                for (const choice of historyModeChoices({ replay })) {
+                    console.log(choice);
+                }
                 while (true) {
                     const answer = (await readline.question(
                         "Choose 1 or 2: "
@@ -1044,8 +1404,8 @@ export function createSystemDependencies(repoRoot) {
                 ).trim();
                 commit = captured(
                     "git",
-                    ["-C", checkout, "commit-tree", tree, "-m", message],
-                    { cwd: repoRoot }
+                    ["-C", checkout, "commit-tree", tree, "-F", "-"],
+                    { cwd: repoRoot, input: `${message.trimEnd()}\n` }
                 ).trim();
                 runCommand(
                     "git",
@@ -1072,12 +1432,11 @@ export function createSystemDependencies(repoRoot) {
                         checkout,
                         "commit",
                         "--quiet",
-                        "-m",
-                        message,
+                        "--file=-",
                         "--",
                         ...changedPaths,
                     ],
-                    { cwd: repoRoot }
+                    { cwd: repoRoot, input: `${message.trimEnd()}\n` }
                 );
                 commit = captured(
                     "git",

@@ -30,9 +30,9 @@ The publisher performs the following work in clearly labeled phases:
 4. Runs the factory tooling tests and generates both templates once, even when both repositories are selected
 5. Compares every selected generated tree with its GitHub template repository in a disposable checkout
 6. Shows the complete staged diff for every planned publication
-7. For each changed existing repository, asks whether to append a normal commit or replace `main` with a fresh root commit when `--history` was not supplied
-8. Resolves the root-commit default or prompts for a missing append message, then asks for final yes-or-no publication approval
-9. Publishes `main`, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
+7. For each changed existing repository, asks whether to append normal history or replace `main` with fresh history when `--history` was not supplied
+8. In normal mode, resolves the root-commit default or prompts for a missing append message; in replay mode, prepares the relevant factory checkpoint commits and shows each diff
+9. Asks for final yes-or-no publication approval, publishes `main` once, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
 10. After an ordinary interactive fresh publication, offers a yes-or-no choice to move the verified recovery mirror to Trash
 11. Prints a compact summary showing whether each selected template was unchanged, created, updated, replaced, or cancelled
 
@@ -42,7 +42,7 @@ Explicit fresh mode is preflighted before tests and generation. Without `--clobb
 
 ## First publication
 
-When a selected GitHub repository does not exist, the publisher creates it as a public repository, pushes an initial commit, and enables the GitHub template setting. The initial commit message defaults to `Initial commit`, so no message is required for this first publication:
+When a selected GitHub repository does not exist, the publisher creates it as a public repository, pushes an initial commit, and enables the GitHub template setting. The initial commit message defaults to `Initial commit`, so no message is required for this first publication. Checkpoint replay adds its relevant commits after that baseline root before the repository is pushed.
 
 ```bash
 npm run template:publish -- openai
@@ -50,12 +50,32 @@ npm run template:publish -- openai
 
 ## Choosing history for an existing template
 
-When a repository already exists and its generated tree changed, the publisher shows the diff and asks how to record the publication:
+When a repository already exists and is selected for a changed, replayed, or explicitly fresh publication, the publisher shows the relevant diff and asks how to record the publication:
 
 1. `append` (recommended) adds a normal commit to the template repository's maintainer history. It preserves an audit trail and makes rollback straightforward.
-2. `fresh` replaces `main` with one new root commit containing the complete generated tree. It force-pushes with a lease and rewrites the template repository's maintainer history.
+2. `fresh` replaces `main` with history that starts at one new root commit. Normal mode stops at that complete-tree root; checkpoint replay adds its relevant commits afterward. Fresh mode force-pushes with a lease and rewrites the template repository's maintainer history.
 
 The publisher does not auto-squash commits. An append publication remains a normal child commit in the template repository. GitHub's separate template-generation behavior still gives a new downstream repository created with "Use this template" a single initial commit, regardless of how many maintainer commits the template repository has. See [Creating a repository from a template](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template).
+
+### Replay curated factory checkpoints
+
+Use checkpoint replay when the template repository's maintainer history should teach the architecture in the same deliberate steps as the factory. Supply the factory revision whose generated tree is the baseline; the publisher replays every first-parent commit after that revision through `HEAD`:
+
+```bash
+npm run template:publish -- all --history append --replay-from <baseline-revision>
+```
+
+Append replay first proves that each downstream repository exactly matches the generated baseline. If it does not, publication stops before creating or pushing anything and asks for the correct baseline or fresh history. This prevents an unrelated downstream state from being folded into the first replayed checkpoint.
+
+Fresh replay creates a parentless `Initial commit` from the generated baseline, then adds the relevant factory checkpoints. Combine it with clobber when old history and retained mirrors should both be replaced and cleaned through the verified backup lifecycle:
+
+```bash
+npm run template:publish -- all --clobber --replay-from <baseline-revision> --yes
+```
+
+The publisher generates the baseline and every selected factory checkpoint in isolated snapshots. It preserves each checkpoint's subject and optional body, skips a checkpoint when it does not change that edition, shows the exact diff for every local commit, and verifies that the resulting tree matches the generated `HEAD` template. It then asks once per repository and pushes the complete sequence once.
+
+`--message` cannot be combined with `--replay-from` because replayed messages come from the reviewed factory commits. Edit the factory commit message before publication when its downstream explanation needs improvement.
 
 ### Append a normal update
 
@@ -75,9 +95,9 @@ Choose `fresh` at the interactive prompt or pass it explicitly:
 npm run template:publish -- openai --history fresh
 ```
 
-Fresh mode defaults to `Initial commit`; pass `--message` only when you want a different root-commit message.
+Normal fresh mode defaults to `Initial commit`; pass `--message` only when you want a different root-commit message. Replay always uses `Initial commit` for its generated baseline and preserves the factory messages that follow it.
 
-Before changing any ref, the publisher creates a bare mirror of the existing repository and verifies that the mirror contains the exact `main` commit observed during comparison. It stores the mirror under `TEMPLATE_PUBLISH_BACKUP_DIR` when that variable is set, otherwise under `${XDG_STATE_HOME:-$HOME/.local/state}/d1-r2-starter/template-publish-backups`. The summary prints the exact retained path.
+Before changing the remote ref, the publisher creates a bare mirror of the existing repository and verifies that the mirror contains the exact `main` commit observed during comparison. It stores the mirror under `TEMPLATE_PUBLISH_BACKUP_DIR` when that variable is set, otherwise under `${XDG_STATE_HOME:-$HOME/.local/state}/d1-r2-starter/template-publish-backups`. The summary prints the exact retained path.
 
 Fresh mode creates a parentless commit, then pushes with `--force-with-lease` pinned to the previously observed remote commit. If another publication moves `main` first, the push fails without overwriting it. The interactive publication prompt names the repository and the history-replacing action; answer `y` or `yes` to continue, and any other answer cancels that publication.
 
@@ -135,11 +155,15 @@ npm run template:publish -- all --history append --message "Refresh generated te
 
 For append mode, omit `--message` when the templates need different commit messages; the publisher prompts for each changed repository separately. Run the variants separately when they also need different history modes.
 
+Checkpoint replay is the exception to the one-message model. It carries each relevant factory subject and body into the template repository and reports how many commits each edition receives.
+
 ## Non-interactive publication
 
 Pass `--yes` to disable interactive prompts and make the command invocation itself the approval to publish after every safety check passes. It supplies consent, not a history choice: an existing repository selected for publication still needs `--history` unless `--clobber` supplies fresh history. `--message` supplies or overrides the commit message, but it is not always required. Creating a repository and replacing one with `fresh` both produce a root commit and therefore default to `Initial commit`; an `append` update has no meaningful default, so it requires `--message` under `--yes` or prompts without `--yes`.
 
 The full staged diff is still printed before any commit. `--yes` does not bypass factory checks, generated-tree guards, remote leases, backup creation, or remote verification. By itself, it also does not delete a fresh-mode recovery mirror; `--clobber` is the separate cleanup authorization.
+
+With `--replay-from`, the disposable checkout commits are prepared locally so their exact diffs can be reviewed before approval. `--yes` approves publishing that prepared sequence; the remote still receives only one push after final-tree verification.
 
 Use non-interactive mode only when the complete command is the publication approval, such as a controlled release job:
 
@@ -156,10 +180,11 @@ npm run template:publish -- all --history fresh --yes
 ## Pre-publish checklist
 
 - [ ] Shared core changes are complete and committed on `main`
+- [ ] Factory checkpoint subjects and bodies make sense in each downstream template that will receive them
 - [ ] The Wrangler tree has been verified under its own toolchain with typecheck, migration application, and a `wrangler dev` smoke test
 - [ ] The OpenAI Sites artifact has been confirmed with `npm run test:build` or through the Sites save-version workflow
 - [ ] `dist/openai/.openai/hosting.json` has no `project_id`, allowing Sites to provision a new project from the reusable template
 - [ ] Each generated tree contains the MIT license and matching package metadata
 - [ ] The generated Wrangler tree contains no OpenAI, ChatGPT, Next.js, React, or Vinext residue
 
-The publisher enforces the clean factory state, factory tooling tests, generation gates, emitted manifest project-linkage guard, residue rules, generated tests, explicit changed-path staging, fresh-mode mirror backup, unresolved-mirror accumulation guard, lease-protected history replacement, and remote verification. The runtime-specific smoke checks remain manual because they require provisioned Cloudflare or Sites environments.
+The publisher enforces the clean factory state, factory tooling tests, generation gates, emitted manifest project-linkage guard, residue rules, generated tests, explicit changed-path staging, replay baseline matching, replay final-tree equivalence, fresh-mode mirror backup, unresolved-mirror accumulation guard, lease-protected history replacement, and remote verification. The runtime-specific smoke checks remain manual because they require provisioned Cloudflare or Sites environments.
