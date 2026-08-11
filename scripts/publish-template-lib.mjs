@@ -24,6 +24,14 @@ export { TEMPLATE_VARIANTS };
 
 const DEFAULT_BRANCH = "main";
 const FACTORY_REMOTE = "origin";
+const FACTORY_REVISION_VARIABLES = Object.freeze({
+    openai: "TEMPLATE_OPENAI_FACTORY_REVISION",
+    wrangler: "TEMPLATE_WRANGLER_FACTORY_REVISION",
+});
+const REPOSITORY_VARIABLE_METHODS = Object.freeze({
+    create: "POST",
+    update: "PATCH",
+});
 const ALL_VARIANTS = "all";
 const AFFIRMATIVE_RESPONSES = new Set(["y", "yes"]);
 const BOTH_VARIANTS_ALIAS = "both";
@@ -138,6 +146,71 @@ function repositoryUrl(repository) {
     return `https://github.com/${repository}.git`;
 }
 
+export function factoryRevisionVariable(variant) {
+    const variable = FACTORY_REVISION_VARIABLES[variant];
+    if (!variable) throw new Error(`Unknown template variant: ${variant}`);
+    return variable;
+}
+
+function repositoryVariableEndpoint(repository, variable) {
+    return `repos/${repository}/actions/variables/${variable}`;
+}
+
+export function repositoryVariableWriteArguments({
+    repository,
+    revision,
+    variable,
+    variableExists,
+}) {
+    const method = variableExists
+        ? REPOSITORY_VARIABLE_METHODS.update
+        : REPOSITORY_VARIABLE_METHODS.create;
+    const endpoint = variableExists
+        ? repositoryVariableEndpoint(repository, variable)
+        : `repos/${repository}/actions/variables`;
+    return [
+        "api",
+        "--method",
+        method,
+        endpoint,
+        "--raw-field",
+        `name=${variable}`,
+        "--raw-field",
+        `value=${revision}`,
+    ];
+}
+
+function readRepositoryVariable(repoRoot, repository, variableName) {
+    const args = [
+        "api",
+        repositoryVariableEndpoint(repository, variableName),
+    ];
+    const result = runCommand("gh", args, {
+        allowFailure: true,
+        cwd: repoRoot,
+    });
+    if (result.status === 0) {
+        let record;
+        try {
+            record = JSON.parse(result.stdout ?? "");
+        } catch {
+            throw new Error(
+                `${repository}: GitHub returned invalid repository variable ${variableName}.`
+            );
+        }
+        if (typeof record.value !== "string") {
+            throw new Error(
+                `${repository}: repository variable ${variableName} has no string value.`
+            );
+        }
+        return record.value;
+    }
+
+    const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    if (parseHttpStatus(output) === NOT_FOUND_STATUS) return undefined;
+    throw commandFailure("gh", args, result);
+}
+
 export function parseHttpStatus(output) {
     const headerMatch = output.match(/^HTTP\/\S+\s+(\d{3})\b/m);
     if (headerMatch?.[1]) return Number.parseInt(headerMatch[1], 10);
@@ -151,6 +224,7 @@ export function parsePublishArguments(args) {
     let help = false;
     let history;
     let message;
+    let replay = false;
     let replayFrom;
     let variant;
     let yes = false;
@@ -167,6 +241,10 @@ export function parsePublishArguments(args) {
         }
         if (argument === "--clobber") {
             clobber = true;
+            continue;
+        }
+        if (argument === "--replay") {
+            replay = true;
             continue;
         }
         if (argument === "--history") {
@@ -237,9 +315,14 @@ export function parsePublishArguments(args) {
     if (replayFrom !== undefined && !replayFrom.trim()) {
         throw new Error("--replay-from cannot be empty.");
     }
-    if (replayFrom !== undefined && message !== undefined) {
+    if (replay && replayFrom !== undefined) {
         throw new Error(
-            "--message cannot be combined with --replay-from because replay preserves factory commit messages."
+            "--replay cannot be combined with --replay-from; use the recorded revision or override it explicitly."
+        );
+    }
+    if ((replay || replayFrom !== undefined) && message !== undefined) {
+        throw new Error(
+            "--message cannot be combined with replay because replay preserves factory commit messages."
         );
     }
     if (clobber && history === HISTORY_MODES.append) {
@@ -255,6 +338,7 @@ export function parsePublishArguments(args) {
         help: false,
         history,
         message: message?.trim(),
+        replay,
         replayFrom: replayFrom?.trim(),
         variant,
         yes,
@@ -264,7 +348,7 @@ export function parsePublishArguments(args) {
 export function publishUsage() {
     return [
         "Usage:",
-        "  npm run template:publish -- <all|openai|wrangler> [--history append|fresh] [--clobber] [--message <message>] [--replay-from <revision>] [--yes]",
+        "  npm run template:publish -- <all|openai|wrangler> [--history append|fresh] [--clobber] [--message <message>] [--replay] [--replay-from <revision>] [--yes]",
         "",
         "Options:",
         "  all                  Process both templates explicitly; both is an alias",
@@ -272,7 +356,8 @@ export function publishUsage() {
         "  --history <mode>     Append to main or replace it with fresh history",
         "  --clobber            Replace history and Trash selected recovery mirrors",
         "  --message <message>  Set the normal publication message; root commits default to Initial commit",
-        "  --replay-from <rev>   Replay first-parent factory checkpoints after a generated baseline",
+        "  --replay             Replay checkpoints after each template's factory-owned cursor",
+        "  --replay-from <rev>  Bootstrap or recover cursors from an explicit factory revision",
         "  --yes                Authorize without prompts; existing repos need history or clobber",
         "  --help               Show this help",
         "",
@@ -336,6 +421,10 @@ function selectedVariants(variant) {
     return variant === ALL_VARIANTS
         ? Object.keys(TEMPLATE_VARIANTS)
         : [variant];
+}
+
+function replayRequested(options) {
+    return options.replay || options.replayFrom !== undefined;
 }
 
 function logPhase(dependencies, title, leadingBlank = true) {
@@ -487,7 +576,7 @@ async function historyModeFor(plan, options, dependencies) {
         );
     }
     const history = await dependencies.requestHistoryMode({
-        replay: options.replayFrom !== undefined,
+        replay: plan.replay !== undefined,
         repository: plan.config.repository,
     });
     if (!Object.hasOwn(HISTORY_MODES, history)) {
@@ -648,11 +737,59 @@ async function materializeReplayCommits(
     return { commit, commitCount };
 }
 
+async function recordVerifiedFactoryRevision(
+    plan,
+    factoryRevision,
+    dependencies
+) {
+    try {
+        await dependencies.recordFactoryRevision({
+            revision: factoryRevision,
+            variant: plan.variant,
+        });
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error([
+            `${plan.config.repository}: verified factory revision was not recorded in factory state ${factoryRevisionVariable(plan.variant)}.`,
+            message,
+        ].join("\n"));
+    }
+    dependencies.log(`${plan.variant}: factory publication state recorded`);
+}
+
+function resolveReplayHistory(repoRoot, from) {
+    const resolved = runCommand(
+        "git",
+        ["rev-parse", "--verify", `${from}^{commit}`],
+        { allowFailure: true, cwd: repoRoot }
+    );
+    if (resolved.status !== 0) {
+        throw new Error(`Unknown replay baseline revision: ${from}`);
+    }
+    const baseRevision = resolved.stdout.trim();
+    const firstParentHistory = captured(
+        "git",
+        ["rev-list", "--first-parent", "HEAD"],
+        { cwd: repoRoot }
+    ).trim().split("\n").filter(Boolean);
+    const baselineIndex = firstParentHistory.indexOf(baseRevision);
+    if (baselineIndex === -1) {
+        throw new Error(
+            "The replay baseline must be on HEAD's uninterrupted first-parent history."
+        );
+    }
+    const revisions = firstParentHistory.slice(0, baselineIndex).reverse();
+    return { baseRevision, revisions };
+}
+
 export async function publishTemplates(options, dependencies) {
     const variants = selectedVariants(options.variant);
+    const wantsReplay = replayRequested(options);
     if (options.clobber && options.history !== HISTORY_MODES.fresh) {
         throw new Error("Clobber publication requires fresh history.");
     }
+    const replays = new Map();
+    const replayStateByVariant = new Map();
     const workspaces = [];
 
     const retainedBackups = await logRetainedBackups(options, dependencies);
@@ -662,8 +799,44 @@ export async function publishTemplates(options, dependencies) {
         retainedBackups
     );
     logPhase(dependencies, "Verify factory", retainedBackups.length > 0);
-    await dependencies.assertFactoryReady();
+    const factoryRevision = await dependencies.assertFactoryReady();
     dependencies.log("Factory main matches origin/main.");
+    if (options.replay) {
+        logPhase(dependencies, "Read replay cursors");
+        for (const variant of variants) {
+            const config = TEMPLATE_VARIANTS[variant];
+            const exists = await dependencies.repositoryExists(
+                config.repository
+            );
+            if (!exists) {
+                throw new Error(
+                    `${config.repository} does not exist, so recorded replay has no published baseline. Bootstrap replay with --replay-from <revision>.`
+                );
+            }
+            const replayFrom = (
+                await dependencies.readFactoryRevision(variant)
+            )?.trim();
+            if (!replayFrom) {
+                throw new Error(
+                    `Factory publication state has no revision for ${config.repository}. Bootstrap replay with --replay-from <revision>.`
+                );
+            }
+            replayStateByVariant.set(variant, { exists, replayFrom });
+            dependencies.log(`${variant}: factory replay cursor found`);
+        }
+    }
+    if (wantsReplay) {
+        logPhase(dependencies, "Verify replay baselines");
+        const baselines = options.replay
+            ? [...replayStateByVariant.values()].map(
+                ({ replayFrom }) => replayFrom
+            )
+            : [options.replayFrom];
+        for (const from of new Set(baselines)) {
+            await dependencies.assertReplayBaseline({ from });
+        }
+        dependencies.log("Replay baselines are on factory first-parent history.");
+    }
     await trashRetainedBackupsForClobber(
         options,
         variants,
@@ -675,25 +848,15 @@ export async function publishTemplates(options, dependencies) {
     await dependencies.generate();
     dependencies.log("Factory checks and template generation passed.");
 
-    let replay;
     const plans = [];
     try {
-        if (options.replayFrom) {
-            logPhase(dependencies, "Prepare checkpoint replay");
-            replay = await dependencies.prepareReplay({
-                from: options.replayFrom,
-            });
-            dependencies.log(
-                `Prepared a generated baseline and ${replay.checkpoints.length} factory checkpoints.`
-            );
-        }
-
         logPhase(dependencies, "Compare templates");
         for (const variant of variants) {
             const config = TEMPLATE_VARIANTS[variant];
-            const exists = await dependencies.repositoryExists(
-                config.repository
-            );
+            const replayState = replayStateByVariant.get(variant);
+            const exists = replayState?.exists
+                ?? await dependencies.repositoryExists(config.repository);
+            const replayFrom = replayState?.replayFrom ?? options.replayFrom;
             const workspace = await dependencies.prepareCheckout({
                 config,
                 exists,
@@ -719,13 +882,14 @@ export async function publishTemplates(options, dependencies) {
 
             const explicitFresh = exists
                 && options.history === HISTORY_MODES.fresh;
-            const requiresPublication = replay !== undefined
+            const requiresPublication = wantsReplay
                 || changedPaths.length > 0
                 || explicitFresh;
             const plan = {
                 changedPaths,
                 config,
                 exists,
+                replayFrom,
                 requiresPublication,
                 variant,
                 workspace,
@@ -733,7 +897,7 @@ export async function publishTemplates(options, dependencies) {
             plans.push(plan);
             if (!requiresPublication) {
                 dependencies.log(`${variant}: unchanged`);
-            } else if (replay) {
+            } else if (wantsReplay) {
                 dependencies.log(`${variant}: checkpoint replay ready`);
             } else if (changedPaths.length === 0) {
                 dependencies.log(`${variant}: fresh history ready`);
@@ -744,14 +908,39 @@ export async function publishTemplates(options, dependencies) {
             }
         }
 
-        const results = plans
-            .filter(({ requiresPublication }) => !requiresPublication)
-            .map(({ config, variant }) => ({
+        if (wantsReplay) {
+            logPhase(dependencies, "Prepare checkpoint replay");
+            for (const plan of plans) {
+                let replay = replays.get(plan.replayFrom);
+                if (!replay) {
+                    replay = await dependencies.prepareReplay({
+                        from: plan.replayFrom,
+                    });
+                    replays.set(plan.replayFrom, replay);
+                    dependencies.log(
+                        `Prepared a generated baseline and ${replay.checkpoints.length} factory checkpoints.`
+                    );
+                }
+                plan.replay = replay;
+            }
+        }
+
+        const results = [];
+        for (const plan of plans.filter(
+            ({ requiresPublication }) => !requiresPublication
+        )) {
+            await recordVerifiedFactoryRevision(
+                plan,
+                factoryRevision,
+                dependencies
+            );
+            results.push({
                 action: PUBLICATION_ACTIONS.update,
-                repository: config.repository,
+                repository: plan.config.repository,
                 status: PUBLICATION_STATUSES.unchanged,
-                variant,
-            }));
+                variant: plan.variant,
+            });
+        }
         const publishPlans = plans.filter(
             ({ requiresPublication }) => requiresPublication
         );
@@ -764,6 +953,7 @@ export async function publishTemplates(options, dependencies) {
             dependencies.log(
                 `${plan.variant}: publish ${plan.config.repository}`
             );
+            const replay = plan.replay;
             if (!replay) {
                 if (plan.changedPaths.length > 0) {
                     await dependencies.stagePaths(
@@ -797,6 +987,11 @@ export async function publishTemplates(options, dependencies) {
                     dependencies
                 ));
                 if (commitCount === 0) {
+                    await recordVerifiedFactoryRevision(
+                        plan,
+                        factoryRevision,
+                        dependencies
+                    );
                     dependencies.log(`${plan.variant}: unchanged`);
                     results.push({
                         action,
@@ -869,6 +1064,11 @@ export async function publishTemplates(options, dependencies) {
                 commit,
                 repository: plan.config.repository,
             });
+            await recordVerifiedFactoryRevision(
+                plan,
+                factoryRevision,
+                dependencies
+            );
 
             const status = publicationStatus(plan, history);
             dependencies.log(`${plan.variant}: ${status} ${commit}`);
@@ -929,11 +1129,29 @@ export async function publishTemplates(options, dependencies) {
         await Promise.all(
             workspaces.map((workspace) => dependencies.cleanup(workspace))
         );
-        if (replay) await dependencies.cleanupReplay(replay);
+        await Promise.all(
+            [...new Set(replays.values())].map((replay) =>
+                dependencies.cleanupReplay(replay)
+            )
+        );
     }
 }
 
 export function createSystemDependencies(repoRoot) {
+    let factoryRepository;
+    const resolveFactoryRepository = () => {
+        if (factoryRepository) return factoryRepository;
+        factoryRepository = captured(
+            "gh",
+            ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+            { cwd: repoRoot }
+        ).trim();
+        if (!factoryRepository) {
+            throw new Error("Could not resolve the factory GitHub repository.");
+        }
+        return factoryRepository;
+    };
+
     return {
         async assertFactoryReady() {
             const status = captured(
@@ -976,6 +1194,7 @@ export function createSystemDependencies(repoRoot) {
                     `Factory HEAD must match ${FACTORY_REMOTE}/${DEFAULT_BRANCH}. Push the reviewed factory commit first.`
                 );
             }
+            return head;
         },
 
         async generate() {
@@ -983,46 +1202,15 @@ export function createSystemDependencies(repoRoot) {
             inherited("npm", ["run", "generate"], repoRoot);
         },
 
-        async prepareReplay({ from }) {
-            const resolved = runCommand(
-                "git",
-                ["rev-parse", "--verify", `${from}^{commit}`],
-                { allowFailure: true, cwd: repoRoot }
-            );
-            if (resolved.status !== 0) {
-                throw new Error(`Unknown replay baseline revision: ${from}`);
-            }
-            const baseRevision = resolved.stdout.trim();
-            const revisions = captured(
-                "git",
-                [
-                    "rev-list",
-                    "--reverse",
-                    "--first-parent",
-                    `${baseRevision}..HEAD`,
-                ],
-                { cwd: repoRoot }
-            ).trim().split("\n").filter(Boolean);
-            if (revisions.length === 0) {
-                throw new Error(
-                    "Checkpoint replay requires at least one factory commit after the baseline."
-                );
-            }
+        async assertReplayBaseline({ from }) {
+            resolveReplayHistory(repoRoot, from);
+        },
 
-            let previousRevision = baseRevision;
-            for (const revision of revisions) {
-                const firstParent = captured(
-                    "git",
-                    ["rev-parse", `${revision}^1`],
-                    { cwd: repoRoot }
-                ).trim();
-                if (firstParent !== previousRevision) {
-                    throw new Error(
-                        "The replay baseline must be on HEAD's uninterrupted first-parent history."
-                    );
-                }
-                previousRevision = revision;
-            }
+        async prepareReplay({ from }) {
+            const { baseRevision, revisions } = resolveReplayHistory(
+                repoRoot,
+                from
+            );
 
             const tempRoot = mkdtempSync(join(tmpdir(), REPLAY_TEMP_PREFIX));
             const snapshot = (revision, name) => {
@@ -1103,6 +1291,47 @@ export function createSystemDependencies(repoRoot) {
                 ["api", "--include", `repos/${repository}`],
                 result
             );
+        },
+
+        async readFactoryRevision(variant) {
+            return readRepositoryVariable(
+                repoRoot,
+                resolveFactoryRepository(),
+                factoryRevisionVariable(variant)
+            );
+        },
+
+        async recordFactoryRevision({ revision, variant }) {
+            const repository = resolveFactoryRepository();
+            const variable = factoryRevisionVariable(variant);
+            const existing = readRepositoryVariable(
+                repoRoot,
+                repository,
+                variable
+            );
+            if (existing === revision) return;
+
+            runCommand(
+                "gh",
+                repositoryVariableWriteArguments({
+                    repository,
+                    revision,
+                    variable,
+                    variableExists: existing !== undefined,
+                }),
+                { cwd: repoRoot }
+            );
+
+            const recorded = readRepositoryVariable(
+                repoRoot,
+                repository,
+                variable
+            );
+            if (recorded !== revision) {
+                throw new Error(
+                    `${repository}: GitHub publication state verification failed.`
+                );
+            }
         },
 
         async prepareCheckout({ config, exists }) {
