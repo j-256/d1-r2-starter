@@ -13,6 +13,7 @@ import { basename, join, relative, sep } from "node:path";
 // (openai gets these via copy-root; only the wrangler emit consumes this list)
 export const SHARED_PATHS = [
     "storage",
+    "platform",
     "db",
     "drizzle",
     "drizzle.config.ts",
