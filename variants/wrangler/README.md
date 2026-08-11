@@ -1,65 +1,133 @@
-# Cloudflare D1 + R2 starter for Workers
+# D1 + R2 starter for Cloudflare Workers
 
-Start building with a database and file storage already wired up.
+Start with a working D1 + R2 feature you can understand, run, and reshape.
 
-This TypeScript starter for Cloudflare Workers connects [D1](https://developers.cloudflare.com/d1/) and [R2](https://developers.cloudflare.com/r2/) behind a small, consistent API and includes a browser storage console, fail-closed authentication, schema migrations, tests, and Wrangler deployment setup. Keep the included storage backends or swap either one without rewriting your routes or UI. Built with [Hono](https://hono.dev) and deployed with `wrangler deploy`.
+This TypeScript starter pairs queryable metadata in [Cloudflare D1](https://developers.cloudflare.com/d1/) with binary file content in [Cloudflare R2](https://developers.cloudflare.com/r2/). Its document library is a thin but real example: upload, search, download, and delete files through one tested feature boundary, then keep it or replace it with your own data model. Built with [Hono](https://hono.dev) and deployed with Wrangler.
 
-## Why start here
+The platform shell is data-model-neutral. `features/documents/` is the deliberately concrete example that shows how D1 and R2 work together.
 
-- **Swappable storage core.** Your routes talk to one provider-neutral `TextStore` contract, never to D1 or R2 directly. Swap adapters at a single seam (`storage/create-services.ts`) to target another SQLite-compatible database or object store, and the API and UI stay the same.
-- **Auth that fails closed.** Every `/api` request runs a required authorizer; there is no allow-all default. It ships a constant-time shared-secret check, so a deployment that forgets to set a secret denies every request instead of exposing your data.
-- **Schema truth lives in migrations.** Drizzle owns the schema; the adapters never `CREATE TABLE` at runtime, so the database can't drift from the code. A worked migration (`0001`) shows how to evolve it with a backwards-compatible column.
-- **Tests run with zero install.** The core suite is buildless: no `node_modules`, no build step, so you can verify the storage contract before you deploy anything.
+Prefer a managed hosting workflow? The [OpenAI Sites edition](https://github.com/j-256/d1-r2-starter-openai) is maintained as a first-class peer with the same application core.
+
+## What you get
+
+- **A useful vertical slice.** D1 stores searchable document metadata while R2 stores the original binary bytes and content type.
+- **A replaceable feature, not a prescribed schema.** Routes and persistence live behind `DocumentService`, `DocumentRepository`, and `ObjectStore` contracts.
+- **Two first-class runtime editions.** This Wrangler/Hono edition and the OpenAI Sites edition use the same feature, validation, persistence, HTTP semantics, migrations, and tests. Only runtime composition, routing glue, authorization policy, and UI are edition-specific.
+- **Auth that fails closed.** Every `/api` request requires the configured bearer secret. A missing secret denies every request.
+- **Deterministic setup and buildless tests.** The lockfile supports `npm ci`, while the shared core suite can also run directly with Node without installing framework dependencies.
 
 ## Quickstart
 
 ```bash
-npm install
-wrangler d1 create d1-r2-starter          # paste the printed database_id into wrangler.jsonc
-wrangler r2 bucket create d1-r2-starter
-wrangler d1 migrations apply d1-r2-starter --remote
-wrangler secret put SHARED_SECRET          # the bearer secret clients must send
-wrangler deploy
+npm ci
+npx wrangler d1 create d1-r2-starter
+npx wrangler r2 bucket create d1-r2-starter
 ```
 
-Clients then send `Authorization: Bearer <SHARED_SECRET>` on every request to `/api/d1` and `/api/r2`.
+Paste the D1 command's `database_id` into `wrangler.jsonc`, then finish setup and deploy:
+
+```bash
+npx wrangler d1 migrations apply d1-r2-starter --remote
+npx wrangler secret put SHARED_SECRET
+npm run deploy
+```
+
+Every document API request must include `Authorization: Bearer <SHARED_SECRET>`.
 
 ## Local development
 
 ```bash
-cp .dev.vars.example .dev.vars   # edit SHARED_SECRET
-wrangler d1 migrations apply d1-r2-starter --local
-wrangler dev
+cp .dev.vars.example .dev.vars
+npx wrangler d1 migrations apply d1-r2-starter --local
+npm run dev
 ```
 
-Open the printed local URL for the console. It prompts for the shared secret and sends it as a bearer token on every request.
+Set `SHARED_SECRET` in the ignored `.dev.vars` file before starting the Worker.
+
+## Document API
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/documents?q=<name>` | List recent documents, optionally filtering by filename |
+| `POST` | `/api/documents` | Upload multipart field `file` with optional text field `description` |
+| `GET` | `/api/documents/:id` | Download the original binary content |
+| `DELETE` | `/api/documents/:id` | Delete the object and metadata; repeated deletes still succeed |
+
+Uploads are bounded by the example's named limits in `features/documents/contracts.ts`. Adjust those limits as part of adapting the feature to your product.
 
 ## Architecture
 
 ```text
-static console (public/index.html)
-        |  fetch /api/d1, /api/r2  (Authorization: Bearer <SHARED_SECRET>)
-        v
-Hono worker (src/worker.ts) -> shared route factory (routes/) -> D1 / R2 adapter -> binding
+Hono route
+    |
+    v
+shared Web Request/Response handlers
+    |
+    v
+DocumentService
+   |             |
+   v             v
+D1 metadata    ObjectStore -> R2 bytes
 ```
 
-`src/worker.ts` is the only Cloudflare-specific code: it builds services from the `DB`/`BUCKET` bindings, injects a `sharedSecretAuthorizer`, and mounts the shared route factory. Everything under `storage/`, `db/`, `drizzle/`, and `routes/` imports no platform APIs, which is what lets the core run unchanged on another runtime.
+- `features/documents/` owns the document contracts, validation, HTTP behavior, D1 repository, schema, and coordination service.
+- `platform/` owns the narrow runtime-facing contracts for Cloudflare bindings, object storage, authorization, and request context.
+- `app-context.ts` and `app-services.ts` carry app-specific request state and compose the example feature with D1 and R2, leaving the lower-level platform modules independent of the document model.
+- `src/worker.ts` is the thin Hono composition root. It supplies bindings and the bearer-secret authorizer, then delegates to the shared handlers.
+- `db/schema.ts` exports feature schemas, and `drizzle/` contains the migration history applied before application code depends on it.
+- `tests/` exercises the shared feature against fakes and an in-memory SQLite database, including binary data that is not valid UTF-8.
+
+The shared handlers use standard `Request` and `Response` objects, so feature behavior is not coupled to Hono context objects or Next.js route helpers.
+
+## Cross-store consistency
+
+D1 and R2 do not share a transaction, so `DefaultDocumentService` makes the policy explicit:
+
+- Create writes the R2 object first, then inserts D1 metadata. If the D1 insert fails, it attempts to remove the new object.
+- Delete removes the R2 object first, then deletes D1 metadata. If the metadata delete fails, retrying repeats the object deletion and attempts the remaining metadata cleanup again.
+- Download treats D1 metadata whose R2 object is missing as a consistency error, not a successful empty file.
+
+These choices fit this small example. Revisit them if your product needs background repair, versioning, large streaming uploads, audit history, or a stronger delivery guarantee.
+
+## Change the data model
+
+You do not need to reshape your product into `DocumentMetadata`. Treat the document library as a worked feature module:
+
+1. Add or replace a directory under `features/` with your domain types, service, validation, persistence, and shared HTTP handlers.
+2. Export its Drizzle tables from `db/schema.ts`, then run `npm run db:generate -- --name <descriptive-name>` and inspect the SQL.
+3. Compose the feature's repository and storage dependencies in `app-services.ts`.
+4. Keep `src/worker.ts` thin by delegating standard `Request` objects to the shared handlers.
+5. Replace or extend `public/index.html` with the interface your feature needs.
+
+If the document model fits but the provider does not, implement `DocumentRepository` or `ObjectStore` and change only the composition in `app-services.ts`. If your app needs several domain features, add them beside `features/documents/` and expose each service through `AppServices`.
 
 ## Authorization
 
-Every `/api` request must send `Authorization: Bearer <SHARED_SECRET>`. The worker injects `sharedSecretAuthorizer(env.SHARED_SECRET)`, which compares in constant time and fails closed when no secret is configured. There is no allow-all path, so an unconfigured or misconfigured deployment denies requests rather than leaking storage.
+Every document handler calls an injected `Authorizer` before parsing a request or touching storage. `src/worker.ts` injects `sharedSecretAuthorizer(env.SHARED_SECRET)`, which fails closed when no secret is configured and compares equal-length candidates without an early exit.
+
+The static page itself is public. Do not place sensitive data in `public/`; the shared secret protects only `/api/*`. Replace the authorizer at the composition seam when your product needs per-user identity, roles, signed sessions, or another access policy.
 
 ## Schema changes
 
-Edit `db/schema.ts`, run `npm run db:generate`, inspect the generated SQL under `drizzle/`, then `wrangler d1 migrations apply`. Treat committed migrations as immutable history.
-
-## Tests
-
-The buildless core suite needs no dependencies and no build step:
+`drizzle/0000_create-documents.sql` creates the document metadata table and indexes. Treat committed migrations as immutable history. Change a feature schema, run `npm run db:generate -- --name <descriptive-name>`, inspect the generated SQL, and apply the new migration before deploying code that depends on it.
 
 ```bash
-node --experimental-sqlite --experimental-strip-types --test tests/*.test.ts
+npx wrangler d1 migrations apply d1-r2-starter --local
+npx wrangler d1 migrations apply d1-r2-starter --remote
 ```
+
+## Commands
+
+- `npm run dev`: start the Worker locally with Wrangler
+- `npm run deploy`: deploy the Worker with Wrangler
+- `npm test`: run the shared buildless feature suite
+- `npm run typecheck`: check project TypeScript without emitting files
+- `npm run db:generate`: generate Drizzle migrations after schema changes
+
+## Prerequisites
+
+- Node.js `>=22.13.0`
+- A Cloudflare account with D1 and R2 available
 
 ## License
 
