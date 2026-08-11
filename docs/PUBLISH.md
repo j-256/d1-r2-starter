@@ -4,16 +4,16 @@ This repository is the source factory for two GitHub templates: `d1-r2-starter-o
 
 ## How publication works
 
-From a clean `main` branch, run the publisher without a variant to process both templates:
-
-```bash
-npm run template:publish
-```
-
-Use `all` when you want the command to state that choice explicitly. `both` is accepted as an alias:
+From a clean `main` branch, choose the publication target explicitly. Use `all` to process both templates:
 
 ```bash
 npm run template:publish -- all
+```
+
+Omitting the target is an error rather than an implicit request to publish both repositories. `both` is accepted as an explicit compatibility alias for `all`:
+
+```bash
+npm run template:publish -- both
 ```
 
 Pass `openai` or `wrangler` when you want to limit the run to one template:
@@ -26,18 +26,19 @@ The publisher performs the following work in clearly labeled phases:
 
 1. Surfaces any retained recovery mirrors from earlier fresh publications
 2. Confirms that the factory worktree is clean and that `HEAD` matches `origin/main`
-3. Runs the factory tooling tests and generates both templates once, even when both repositories are selected
-4. Compares every selected generated tree with its GitHub template repository in a disposable checkout
-5. Shows the complete staged diff for every planned publication
-6. For each changed existing repository, asks whether to append a normal commit or replace `main` with a fresh root commit when `--history` was not supplied
-7. Resolves the root-commit default or prompts for a missing append message, then asks for final yes-or-no publication approval
-8. Publishes `main`, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
-9. After an interactive fresh publication, offers a yes-or-no choice to move the verified recovery mirror to Trash
-10. Prints a compact summary showing whether each selected template was unchanged, created, updated, replaced, or cancelled
+3. In clobber mode, moves selected retained recovery mirrors to Trash
+4. Runs the factory tooling tests and generates both templates once, even when both repositories are selected
+5. Compares every selected generated tree with its GitHub template repository in a disposable checkout
+6. Shows the complete staged diff for every planned publication
+7. For each changed existing repository, asks whether to append a normal commit or replace `main` with a fresh root commit when `--history` was not supplied
+8. Resolves the root-commit default or prompts for a missing append message, then asks for final yes-or-no publication approval
+9. Publishes `main`, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
+10. After an ordinary interactive fresh publication, offers a yes-or-no choice to move the verified recovery mirror to Trash
+11. Prints a compact summary showing whether each selected template was unchanged, created, updated, replaced, or cancelled
 
 If a generated tree already matches its existing template repository, the publisher normally does not ask for a message or confirmation and does not create a commit or push. Explicit `--history fresh` is the exception because replacing maintainer history is itself the requested publication.
 
-Explicit fresh mode is preflighted before tests and generation. If any selected template has a retained recovery mirror, the command stops immediately.
+Explicit fresh mode is preflighted before tests and generation. Without `--clobber`, any selected template with a retained recovery mirror stops the command immediately.
 
 ## First publication
 
@@ -106,25 +107,39 @@ npm run template:backups -- trash openai
 
 The explicit `trash` action and required variant are the cleanup approval, so the command does not ask for a second confirmation. If restoration is needed instead, use the retained bare mirror to inspect and deliberately restore the previous refs.
 
+### Clobber selected histories and mirrors
+
+Use clobber mode when the intended result is fresh root history with no retained publication mirrors after successful verification:
+
+```bash
+npm run template:publish -- all --clobber --yes
+```
+
+`--clobber` implies `--history fresh`, uses the normal `Initial commit` root-message default, and conflicts with `--history append`. After the clean-factory check, it moves pre-existing mirrors for the selected variants to Trash before generation. Each existing repository still gets a verified recovery mirror before its lease-protected force push; that new mirror moves to Trash only after the published commit and template setting are verified.
+
+If publication or verification fails, the new recovery mirror remains available. If post-verification Trash cleanup fails, the command exits with an error that identifies the successfully published repository and retained mirror. Mirrors for unselected variants are never moved.
+
+`--yes` authorizes publication without prompts. `--clobber` separately authorizes the fresh-history and mirror-cleanup lifecycle; neither flag silently acquires the other's meaning.
+
 Passing `--history fresh` also replaces history when the generated files are unchanged. This is useful when the only intended change is collapsing the template repository's maintainer history to a new root. An interactive run without `--history` continues to skip unchanged repositories.
 
 ## Commit messages
 
 Creating a repository and replacing one with `fresh` both default to the root-commit message `Initial commit`. An append publication has no default that can describe its changes, so the publisher asks for its message after showing the diff when `--message` was not supplied.
 
-Without a variant, one supplied message is used for every changed template selected by the run:
+With `all`, one supplied message is used for every changed template selected by the run:
 
 ```bash
-npm run template:publish -- --history append --message "Refresh generated templates"
+npm run template:publish -- all --history append --message "Refresh generated templates"
 ```
 
 For append mode, omit `--message` when the templates need different commit messages; the publisher prompts for each changed repository separately. Run the variants separately when they also need different history modes.
 
 ## Non-interactive publication
 
-Pass `--yes` to disable interactive prompts and make the command invocation itself the approval to publish after every safety check passes. It supplies consent, not a history choice: an existing repository selected for publication still needs `--history`. `--message` supplies or overrides the commit message, but it is not always required. Creating a repository and replacing one with `fresh` both produce a root commit and therefore default to `Initial commit`; an `append` update has no meaningful default, so it requires `--message` under `--yes` or prompts without `--yes`.
+Pass `--yes` to disable interactive prompts and make the command invocation itself the approval to publish after every safety check passes. It supplies consent, not a history choice: an existing repository selected for publication still needs `--history` unless `--clobber` supplies fresh history. `--message` supplies or overrides the commit message, but it is not always required. Creating a repository and replacing one with `fresh` both produce a root commit and therefore default to `Initial commit`; an `append` update has no meaningful default, so it requires `--message` under `--yes` or prompts without `--yes`.
 
-The full staged diff is still printed before any commit. `--yes` does not bypass factory checks, generated-tree guards, remote leases, backup creation, or remote verification. It also does not delete a fresh-mode recovery mirror; cleanup remains a separate human decision after inspecting the rewritten repository.
+The full staged diff is still printed before any commit. `--yes` does not bypass factory checks, generated-tree guards, remote leases, backup creation, or remote verification. By itself, it also does not delete a fresh-mode recovery mirror; `--clobber` is the separate cleanup authorization.
 
 Use non-interactive mode only when the complete command is the publication approval, such as a controlled release job:
 

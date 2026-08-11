@@ -27,6 +27,8 @@ const FACTORY_REMOTE = "origin";
 const ALL_VARIANTS = "all";
 const AFFIRMATIVE_RESPONSES = new Set(["y", "yes"]);
 const BOTH_VARIANTS_ALIAS = "both";
+const TEMPLATE_TARGET_REQUIRED_MESSAGE =
+    "A template target is required. Pass all for both templates, or choose openai or wrangler.";
 const HISTORY_MODES = Object.freeze({
     append: "append",
     fresh: "fresh",
@@ -117,6 +119,7 @@ export function parseHttpStatus(output) {
 }
 
 export function parsePublishArguments(args) {
+    let clobber = false;
     let help = false;
     let history;
     let message;
@@ -131,6 +134,10 @@ export function parsePublishArguments(args) {
         }
         if (argument === "--yes") {
             yes = true;
+            continue;
+        }
+        if (argument === "--clobber") {
+            clobber = true;
             continue;
         }
         if (argument === "--history") {
@@ -185,8 +192,16 @@ export function parsePublishArguments(args) {
     if (message !== undefined && !message.trim()) {
         throw new Error("--message cannot be empty.");
     }
+    if (clobber && history === HISTORY_MODES.append) {
+        throw new Error("--clobber cannot be combined with --history append.");
+    }
+    if (variant === undefined) {
+        throw new Error(TEMPLATE_TARGET_REQUIRED_MESSAGE);
+    }
+    if (clobber) history = HISTORY_MODES.fresh;
 
     return {
+        clobber,
         help: false,
         history,
         message: message?.trim(),
@@ -198,14 +213,15 @@ export function parsePublishArguments(args) {
 export function publishUsage() {
     return [
         "Usage:",
-        "  npm run template:publish -- [all|openai|wrangler] [--history append|fresh] [--message <message>] [--yes]",
+        "  npm run template:publish -- <all|openai|wrangler> [--history append|fresh] [--clobber] [--message <message>] [--yes]",
         "",
         "Options:",
         "  all                  Process both templates explicitly; both is an alias",
         "  openai|wrangler      Limit publication to one template",
         "  --history <mode>     Append a commit or replace main with a fresh root",
+        "  --clobber            Replace history and Trash selected recovery mirrors",
         "  --message <message>  Override the commit message; root commits default to Initial commit",
-        "  --yes                Authorize publication without prompts; existing repos require history",
+        "  --yes                Authorize without prompts; existing repos need history or clobber",
         "  --help               Show this help",
         "",
         "Environment:",
@@ -264,7 +280,8 @@ export function mergeChangedPaths(trackedOutput, untrackedOutput) {
 }
 
 function selectedVariants(variant) {
-    return !variant || variant === ALL_VARIANTS
+    if (!variant) throw new Error(TEMPLATE_TARGET_REQUIRED_MESSAGE);
+    return variant === ALL_VARIANTS
         ? Object.keys(TEMPLATE_VARIANTS)
         : [variant];
 }
@@ -274,7 +291,7 @@ function logPhase(dependencies, title, leadingBlank = true) {
     dependencies.log(`== ${title} ==`);
 }
 
-async function logRetainedBackups(dependencies) {
+async function logRetainedBackups(options, dependencies) {
     const records = [];
     for (const [variant, config] of Object.entries(TEMPLATE_VARIANTS)) {
         const paths = await dependencies.listRetainedBackups(
@@ -289,9 +306,15 @@ async function logRetainedBackups(dependencies) {
         dependencies.log(`  ${record.variant}: ${record.path}`);
     }
     dependencies.log("");
-    dependencies.log(
-        `Review or clean them with ${TEMPLATE_BACKUP_COMMANDS.list}.`
-    );
+    if (options.clobber) {
+        dependencies.log(
+            "Clobber mode will move mirrors for selected targets to Trash after factory verification."
+        );
+    } else {
+        dependencies.log(
+            `Review or clean them with ${TEMPLATE_BACKUP_COMMANDS.list}.`
+        );
+    }
     return records;
 }
 
@@ -300,7 +323,12 @@ function assertExplicitFreshBackupsAvailable(
     variants,
     retainedBackups
 ) {
-    if (options.history !== HISTORY_MODES.fresh) return;
+    if (
+        options.history !== HISTORY_MODES.fresh
+        || options.clobber
+    ) {
+        return;
+    }
     const selected = new Set(variants);
     const conflicts = retainedBackups.filter(({ variant }) =>
         selected.has(variant)
@@ -312,6 +340,35 @@ function assertExplicitFreshBackupsAvailable(
         ...conflicts.map(({ path, variant }) => `  ${variant}: ${path}`),
         `Review them with ${TEMPLATE_BACKUP_COMMANDS.list}. Fresh publication stopped to avoid accumulating unresolved mirrors.`,
     ].join("\n"));
+}
+
+async function trashRetainedBackupsForClobber(
+    options,
+    variants,
+    retainedBackups,
+    dependencies
+) {
+    if (!options.clobber) return;
+    const selected = new Set(variants);
+    const paths = retainedBackups
+        .filter(({ variant }) => selected.has(variant))
+        .map(({ path }) => path);
+    if (paths.length === 0) return;
+
+    try {
+        await dependencies.moveBackupsToTrash(paths);
+    } catch (error) {
+        const message = error instanceof Error
+            ? error.message
+            : String(error);
+        throw new Error([
+            "Clobber mode could not move selected retained recovery mirrors to Trash.",
+            `Trash error: ${message}`,
+        ].join("\n"));
+    }
+    dependencies.log(
+        "Clobber mode moved selected retained recovery mirrors to Trash."
+    );
 }
 
 function logSummary(dependencies, results) {
@@ -415,9 +472,12 @@ function publicationStatus(plan, history) {
 
 export async function publishTemplates(options, dependencies) {
     const variants = selectedVariants(options.variant);
+    if (options.clobber && options.history !== HISTORY_MODES.fresh) {
+        throw new Error("Clobber publication requires fresh history.");
+    }
     const workspaces = [];
 
-    const retainedBackups = await logRetainedBackups(dependencies);
+    const retainedBackups = await logRetainedBackups(options, dependencies);
     assertExplicitFreshBackupsAvailable(
         options,
         variants,
@@ -426,6 +486,12 @@ export async function publishTemplates(options, dependencies) {
     logPhase(dependencies, "Verify factory", retainedBackups.length > 0);
     await dependencies.assertFactoryReady();
     dependencies.log("Factory main matches origin/main.");
+    await trashRetainedBackupsForClobber(
+        options,
+        variants,
+        retainedBackups,
+        dependencies
+    );
 
     logPhase(dependencies, "Test and generate");
     await dependencies.generate();
@@ -588,12 +654,12 @@ export async function publishTemplates(options, dependencies) {
             const status = publicationStatus(plan, history);
             dependencies.log(`${plan.variant}: ${status} ${commit}`);
             let backupTrashed = false;
-            if (backup && !options.yes) {
+            if (backup && (options.clobber || !options.yes)) {
                 dependencies.log(
                     `Verified replacement: https://github.com/${plan.config.repository}/commit/${commit}`
                 );
-                const cleanupRequested =
-                    await dependencies.confirmBackupCleanup({
+                const cleanupRequested = options.clobber
+                    || await dependencies.confirmBackupCleanup({
                         repository: plan.config.repository,
                     });
                 if (cleanupRequested) {
@@ -606,6 +672,13 @@ export async function publishTemplates(options, dependencies) {
                         const message = error instanceof Error
                             ? error.message
                             : String(error);
+                        if (options.clobber) {
+                            throw new Error([
+                                `${plan.config.repository} was published and verified, but clobber cleanup failed.`,
+                                `Recovery mirror retained at ${backup}`,
+                                `Trash error: ${message}`,
+                            ].join("\n"));
+                        }
                         dependencies.log(
                             `Could not move the mirror to Trash: ${message}`
                         );

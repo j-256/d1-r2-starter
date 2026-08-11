@@ -64,6 +64,7 @@ function fakeDependencies(options = {}) {
     const operations = [];
     const defaultChangedPaths = options.changedPaths ?? ["README.md"];
     const defaultExists = options.exists ?? true;
+    const trashedBackups = new Set();
 
     return {
         dependencies: {
@@ -127,11 +128,14 @@ function fakeDependencies(options = {}) {
             },
             async listRetainedBackups(repository) {
                 operations.push(`listRetainedBackups:${repository}`);
-                return options.retainedBackupsByRepository?.[repository] ?? [];
+                return (
+                    options.retainedBackupsByRepository?.[repository] ?? []
+                ).filter((path) => !trashedBackups.has(path));
             },
             async moveBackupsToTrash(paths) {
                 operations.push(`moveBackupsToTrash:${paths.join(",")}`);
                 if (options.trashError) throw options.trashError;
+                for (const path of paths) trashedBackups.add(path);
             },
             async createMirrorBackup({ repository }) {
                 operations.push(`createMirrorBackup:${repository}`);
@@ -162,6 +166,9 @@ function fakeDependencies(options = {}) {
             },
             async verifyPublished({ repository }) {
                 operations.push(`verifyPublished:${repository}`);
+                const error = options.verifyErrorByRepository?.[repository]
+                    ?? options.verifyError;
+                if (error) throw error;
             },
             async cleanup(workspace) {
                 operations.push(`cleanup:${workspace.checkout}`);
@@ -174,12 +181,21 @@ function fakeDependencies(options = {}) {
     };
 }
 
-test("parsePublishArguments defaults to both templates", () => {
-    assert.deepEqual(parsePublishArguments([]), {
+test("parsePublishArguments requires an explicit template target", () => {
+    assert.throws(
+        () => parsePublishArguments([]),
+        /Pass all for both templates/
+    );
+    assert.deepEqual(parsePublishArguments(["all"]), {
+        clobber: false,
         help: false,
         history: undefined,
         message: undefined,
-        variant: undefined,
+        variant: "all",
+        yes: false,
+    });
+    assert.deepEqual(parsePublishArguments(["--help"]), {
+        help: true,
         yes: false,
     });
 });
@@ -194,12 +210,36 @@ test("parsePublishArguments accepts a variant, history, message, and confirmatio
             "--yes",
         ]),
         {
+            clobber: false,
             help: false,
             history: "fresh",
             message: UPDATE_MESSAGE,
             variant: "openai",
             yes: true,
         }
+    );
+});
+
+test("parsePublishArguments expands clobber to fresh history", () => {
+    assert.deepEqual(
+        parsePublishArguments(["all", "--clobber", "--yes"]),
+        {
+            clobber: true,
+            help: false,
+            history: "fresh",
+            message: undefined,
+            variant: "all",
+            yes: true,
+        }
+    );
+    assert.throws(
+        () => parsePublishArguments([
+            "openai",
+            "--clobber",
+            "--history",
+            "append",
+        ]),
+        /cannot be combined with --history append/
     );
 });
 
@@ -228,8 +268,9 @@ test("publishUsage documents history modes and persistent backups", () => {
     assert.match(usage, /all\|openai\|wrangler/);
     assert.match(usage, /both is an alias/);
     assert.match(usage, /--history append\|fresh/);
+    assert.match(usage, /--clobber/);
     assert.match(usage, /root commits default to Initial commit/);
-    assert.match(usage, /Authorize publication without prompts/);
+    assert.match(usage, /existing repos need history or clobber/);
     assert.match(usage, /TEMPLATE_PUBLISH_BACKUP_DIR/);
 });
 
@@ -566,6 +607,7 @@ test("publishTemplates compares both variants before publishing and runs setup o
             help: false,
             history: "append",
             message: UPDATE_MESSAGE,
+            variant: "all",
             yes: true,
         },
         fake.dependencies
@@ -628,11 +670,47 @@ test("publishTemplates processes both variants for an explicit all selection", a
     );
 });
 
+test("publishTemplates rejects an omitted target before doing work", async () => {
+    const fake = fakeDependencies({ changedPaths: [], exists: true });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                help: false,
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /Pass all for both templates/
+    );
+    assert.deepEqual(fake.operations, []);
+});
+
+test("publishTemplates rejects inconsistent clobber options before doing work", async () => {
+    const fake = fakeDependencies({ exists: true });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                clobber: true,
+                help: false,
+                history: "append",
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /requires fresh history/
+    );
+    assert.deepEqual(fake.operations, []);
+});
+
 test("publishTemplates reports unchanged variants without staging", async () => {
     const fake = fakeDependencies({ changedPaths: [], exists: true });
     const results = await publishTemplates(
         {
             help: false,
+            variant: "all",
             yes: true,
         },
         fake.dependencies
@@ -861,6 +939,205 @@ test("publishTemplates refuses to accumulate fresh-mode mirrors", async () => {
     assert.equal(
         fake.operations.some((operation) => operation.startsWith("commit:")),
         false
+    );
+});
+
+test("clobber replaces all histories and cleans old and verified mirrors", async () => {
+    const openaiBackup = "/state/openai-backup.git";
+    const wranglerBackup = "/state/wrangler-backup.git";
+    const fake = fakeDependencies({
+        exists: true,
+        retainedBackupsByRepository: {
+            [OPENAI_REPOSITORY]: [openaiBackup],
+            [WRANGLER_REPOSITORY]: [wranglerBackup],
+        },
+    });
+    const results = await publishTemplates(
+        {
+            clobber: true,
+            help: false,
+            history: "fresh",
+            variant: "all",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.deepEqual(
+        results.map(({ backup, backupTrashed, status, variant }) => ({
+            backup,
+            backupTrashed,
+            status,
+            variant,
+        })),
+        [
+            {
+                backup: undefined,
+                backupTrashed: true,
+                status: "replaced",
+                variant: "openai",
+            },
+            {
+                backup: undefined,
+                backupTrashed: true,
+                status: "replaced",
+                variant: "wrangler",
+            },
+        ]
+    );
+    const oldCleanup = fake.operations.indexOf(
+        `moveBackupsToTrash:${openaiBackup},${wranglerBackup}`
+    );
+    assert.equal(
+        fake.operations.includes(
+            "log:Clobber mode will move mirrors for selected targets to Trash after factory verification."
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.indexOf("assertFactoryReady") < oldCleanup,
+        true
+    );
+    assert.equal(oldCleanup < fake.operations.indexOf("generate"), true);
+    for (const repository of [OPENAI_REPOSITORY, WRANGLER_REPOSITORY]) {
+        assert.equal(
+            fake.operations.includes(
+                `commit:${repository}:fresh:Initial commit:README.md`
+            ),
+            true
+        );
+        const verify = fake.operations.indexOf(
+            `verifyPublished:${repository}`
+        );
+        const cleanup = fake.operations.indexOf(
+            `moveBackupsToTrash:backup:${repository}`
+        );
+        assert.equal(verify < cleanup, true);
+        assert.equal(
+            fake.operations.includes(`confirmBackupCleanup:${repository}`),
+            false
+        );
+    }
+});
+
+test("clobber leaves retained mirrors for unselected variants untouched", async () => {
+    const openaiBackup = "/state/openai-backup.git";
+    const fake = fakeDependencies({
+        changedPaths: [],
+        exists: true,
+        retainedBackupsByRepository: {
+            [OPENAI_REPOSITORY]: [openaiBackup],
+        },
+    });
+    const [result] = await publishTemplates(
+        {
+            clobber: true,
+            help: false,
+            history: "fresh",
+            variant: "wrangler",
+            yes: true,
+        },
+        fake.dependencies
+    );
+
+    assert.equal(result.variant, "wrangler");
+    assert.equal(result.backupTrashed, true);
+    assert.equal(
+        fake.operations.some((operation) => operation.includes(openaiBackup)),
+        true
+    );
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith("moveBackupsToTrash:")
+            && operation.includes(openaiBackup)
+        ),
+        false
+    );
+});
+
+test("clobber stops before generation when old mirror cleanup fails", async () => {
+    const backup = "/state/openai-backup.git";
+    const fake = fakeDependencies({
+        exists: true,
+        retainedBackupsByRepository: {
+            [OPENAI_REPOSITORY]: [backup],
+        },
+        trashError: new Error("trash unavailable"),
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                clobber: true,
+                help: false,
+                history: "fresh",
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /could not move selected retained recovery mirrors to Trash/
+    );
+    assert.equal(fake.operations.includes("assertFactoryReady"), true);
+    assert.equal(fake.operations.includes("generate"), false);
+});
+
+test("clobber retains a new mirror when remote verification fails", async () => {
+    const fake = fakeDependencies({
+        exists: true,
+        verifyError: new Error("verification failed"),
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                clobber: true,
+                help: false,
+                history: "fresh",
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /verification failed/
+    );
+    assert.equal(
+        fake.operations.includes(`createMirrorBackup:${OPENAI_REPOSITORY}`),
+        true
+    );
+    assert.equal(
+        fake.operations.includes(
+            `moveBackupsToTrash:backup:${OPENAI_REPOSITORY}`
+        ),
+        false
+    );
+});
+
+test("clobber reports a retained mirror when verified cleanup fails", async () => {
+    const fake = fakeDependencies({
+        exists: true,
+        trashError: new Error("trash unavailable"),
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                clobber: true,
+                help: false,
+                history: "fresh",
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /published and verified, but clobber cleanup failed/
+    );
+    assert.equal(
+        fake.operations.indexOf(`verifyPublished:${OPENAI_REPOSITORY}`)
+            < fake.operations.indexOf(
+                `moveBackupsToTrash:backup:${OPENAI_REPOSITORY}`
+            ),
+        true
     );
 });
 
