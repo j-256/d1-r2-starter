@@ -3,26 +3,666 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="A replaceable document example built with Cloudflare D1 and R2." />
   <title>D1 + R2 Document Library</title>
   <style>
-    :root { color-scheme: light; font-family: system-ui, sans-serif; }
-    body { align-items: center; background: #f4f3ef; color: #18221d; display: flex; justify-content: center; margin: 0; min-height: 100vh; }
-    main { max-width: 45rem; padding: 3rem 1.5rem; }
-    .eyebrow { color: #1f6b45; font-family: ui-monospace, monospace; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
-    h1 { font-size: clamp(2.6rem, 8vw, 4.5rem); letter-spacing: -0.05em; line-height: 1; margin: 1.1rem 0 1.5rem; }
-    p { color: #67716b; font-size: 1.1rem; line-height: 1.7; }
-    code { background: white; border: 1px solid #dfe3dc; border-radius: 0.5rem; display: block; margin-top: 0.5rem; padding: 0.65rem 0.75rem; }
+    :root {
+      color-scheme: light;
+      --background: #f4f3ef;
+      --surface: #fff;
+      --surface-muted: #f8f8f5;
+      --ink: #18221d;
+      --muted: #67716b;
+      --line: #dfe3dc;
+      --green: #1f6b45;
+      --green-dark: #155236;
+      --green-soft: #e2f2e8;
+      --danger: #a13d34;
+      --danger-soft: #f9e9e6;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      background: radial-gradient(circle at 10% 0%, #d2e8d9a6, transparent 28rem), var(--background);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      min-height: 100vh;
+    }
+
+    button, input, textarea { font: inherit; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible {
+      outline: 3px solid #1f6b4547;
+      outline-offset: 2px;
+    }
+
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
+    .site-header {
+      align-items: center;
+      display: flex;
+      justify-content: space-between;
+      margin: 0 auto;
+      max-width: 1180px;
+      padding: 28px 28px 16px;
+    }
+
+    .brand { align-items: center; display: flex; font-size: 15px; font-weight: 750; gap: 10px; }
+    .brand-mark {
+      align-items: center;
+      background: var(--ink);
+      border-radius: 10px;
+      color: white;
+      display: inline-flex;
+      font-family: ui-monospace, monospace;
+      height: 34px;
+      justify-content: center;
+      width: 34px;
+    }
+
+    .badges { display: flex; gap: 7px; }
+    .badge, .type-pill {
+      background: #ffffffb8;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      padding: 7px 10px;
+    }
+
+    .page-shell { margin: 0 auto; max-width: 1180px; padding: 58px 28px 78px; }
+    .hero { max-width: 790px; padding-bottom: 40px; }
+    .eyebrow {
+      color: var(--green);
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      font-weight: 750;
+      letter-spacing: 0.12em;
+      margin: 0 0 13px;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      font-size: clamp(42px, 7vw, 72px);
+      letter-spacing: -0.055em;
+      line-height: 0.99;
+      margin: 0;
+    }
+
+    .hero-copy { color: var(--muted); font-size: 18px; line-height: 1.65; margin: 23px 0 0; max-width: 690px; }
+    .connection {
+      align-items: end;
+      background: #18221df0;
+      border-radius: 18px;
+      color: white;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      margin-bottom: 22px;
+      padding: 18px;
+    }
+
+    .connection label { display: grid; font-size: 12px; font-weight: 700; gap: 7px; }
+    .connection input {
+      background: #ffffff18;
+      border: 1px solid #ffffff38;
+      border-radius: 10px;
+      color: white;
+      min-width: 0;
+      padding: 11px 12px;
+    }
+
+    .connection input::placeholder { color: #ffffff80; }
+    .workspace { align-items: start; display: grid; gap: 24px; grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.5fr); }
+    .panel {
+      background: #fffffff0;
+      border: 1px solid #cbd2cacc;
+      border-radius: 22px;
+      box-shadow: 0 24px 70px #1a2e2314;
+      padding: 26px;
+    }
+
+    .upload-panel { position: sticky; top: 20px; }
+    h2 { font-size: 24px; letter-spacing: -0.035em; margin: 0; }
+    .section-copy { color: var(--muted); font-size: 13px; line-height: 1.55; margin: 9px 0 0; }
+    form { margin: 0; }
+    .upload-form { display: grid; gap: 17px; margin-top: 22px; }
+    .file-picker {
+      align-items: center;
+      background: var(--surface-muted);
+      border: 1px dashed #cbd2ca;
+      border-radius: 16px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 170px;
+      padding: 22px;
+      text-align: center;
+    }
+
+    .file-picker:hover { background: var(--green-soft); border-color: var(--green); }
+    .file-picker input { height: 1px; opacity: 0; position: absolute; width: 1px; }
+    .file-icon {
+      align-items: center;
+      background: var(--green);
+      border-radius: 11px;
+      color: white;
+      display: flex;
+      font-size: 23px;
+      height: 40px;
+      justify-content: center;
+      margin-bottom: 13px;
+      width: 40px;
+    }
+
+    .file-picker strong { font-size: 14px; max-width: 100%; overflow-wrap: anywhere; }
+    .file-picker small { color: var(--muted); font-size: 11px; margin-top: 6px; }
+    .field { display: grid; gap: 7px; }
+    .field > span, .search-form label { font-size: 12px; font-weight: 700; }
+    textarea, input[type="search"] {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      color: var(--ink);
+      padding: 11px 12px;
+    }
+
+    textarea { min-height: 94px; resize: vertical; }
+    .button {
+      align-items: center;
+      border: 0;
+      border-radius: 9px;
+      cursor: pointer;
+      display: inline-flex;
+      font-size: 12px;
+      font-weight: 700;
+      justify-content: center;
+      min-height: 38px;
+      padding: 9px 13px;
+    }
+
+    .button.primary { background: var(--green); color: white; }
+    .button.primary:hover:not(:disabled) { background: var(--green-dark); }
+    .button.secondary { background: var(--surface); border: 1px solid var(--line); color: var(--ink); }
+    .button.quiet { background: transparent; color: var(--muted); }
+    .button.danger { background: var(--danger); color: white; }
+    .button.danger-text { color: var(--danger); }
+    .full-width { width: 100%; }
+    .library-heading { align-items: center; display: flex; justify-content: space-between; }
+    .search-form { display: grid; gap: 8px; margin-top: 23px; }
+    .search-row { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) auto; }
+    .summary-grid { display: grid; gap: 9px; grid-template-columns: repeat(3, 1fr); margin: 20px 0; }
+    .summary-card { background: var(--surface-muted); border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 5px; padding: 13px; }
+    .summary-card span { color: var(--muted); font-size: 10px; }
+    .summary-card strong { font-family: ui-monospace, monospace; font-size: 15px; }
+    .notice { border-radius: 11px; display: none; font-size: 12px; line-height: 1.5; margin-bottom: 14px; padding: 11px 13px; }
+    .notice.visible { display: block; }
+    .notice.success { background: var(--green-soft); color: var(--green-dark); }
+    .notice.error { background: var(--danger-soft); color: var(--danger); }
+    .document-list { display: grid; gap: 11px; }
+    .document-card { border: 1px solid var(--line); border-radius: 15px; padding: 17px; }
+    .document-heading { align-items: start; display: flex; gap: 14px; justify-content: space-between; }
+    .document-heading h3 { font-size: 14px; margin: 0; overflow-wrap: anywhere; }
+    .document-heading p { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 4px 0 0; }
+    .type-pill { background: var(--surface-muted); flex: 0 0 auto; max-width: 165px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .document-meta { display: flex; flex-wrap: wrap; gap: 9px 24px; margin: 15px 0; }
+    .document-meta div { display: grid; gap: 3px; }
+    .document-meta dt { color: var(--muted); font-size: 9px; text-transform: uppercase; }
+    .document-meta dd { font-family: ui-monospace, monospace; font-size: 10px; margin: 0; }
+    .document-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 5px; }
+    .empty-state { align-items: center; color: var(--muted); display: flex; flex-direction: column; justify-content: center; min-height: 260px; padding: 28px; text-align: center; }
+    .empty-state h3 { color: var(--ink); font-size: 15px; margin: 14px 0 5px; }
+    .empty-state p { font-size: 12px; line-height: 1.5; margin: 0; max-width: 320px; }
+    .empty-mark { border: 2px solid #cbd2ca; border-radius: 11px; height: 46px; width: 39px; }
+    footer { border-top: 1px solid #cbd2cab3; color: var(--muted); font-family: ui-monospace, monospace; font-size: 10px; margin: 0 28px; padding: 24px; text-align: center; text-transform: uppercase; }
+
+    @media (max-width: 850px) {
+      .workspace { grid-template-columns: 1fr; }
+      .upload-panel { position: static; }
+    }
+
+    @media (max-width: 590px) {
+      .site-header { align-items: flex-start; padding: 20px 16px; }
+      .badges { align-items: end; flex-direction: column; gap: 4px; }
+      .badge { padding: 5px 8px; }
+      .page-shell { padding: 38px 12px 58px; }
+      h1 { font-size: 43px; }
+      .hero-copy { font-size: 16px; }
+      .connection { align-items: stretch; grid-template-columns: 1fr; }
+      .panel { border-radius: 17px; padding: 19px; }
+      .summary-grid, .search-row { grid-template-columns: 1fr; }
+      .document-heading { align-items: flex-start; flex-direction: column; }
+      .type-pill { max-width: 100%; }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <p class="eyebrow">Shared feature API ready</p>
-    <h1>D1 + R2 Document Library</h1>
-    <p>The data-model-neutral platform shell runs a document feature that stores structured metadata in D1 and binary content in R2.</p>
-    <code>GET /api/documents</code>
-    <code>POST /api/documents</code>
-    <code>GET /api/documents/:id</code>
-    <code>DELETE /api/documents/:id</code>
+  <header class="site-header">
+    <div class="brand"><span class="brand-mark">D</span><span>Document Library</span></div>
+    <div class="badges"><span class="badge">D1 metadata</span><span class="badge">R2 files</span></div>
+  </header>
+
+  <main class="page-shell">
+    <section class="hero">
+      <p class="eyebrow">A replaceable example feature</p>
+      <h1>Structured records meet real files.</h1>
+      <p class="hero-copy">Upload a document once. Its searchable metadata lives in D1 while its original bytes live in R2. Replace this feature with your own data model without rebuilding the Cloudflare plumbing.</p>
+    </section>
+
+    <form class="connection" id="connection-form">
+      <label for="secret">Wrangler shared secret
+        <input id="secret" type="password" placeholder="SHARED_SECRET" autocomplete="off" />
+      </label>
+      <button class="button primary" id="connect-button" type="submit">Connect</button>
+    </form>
+
+    <section class="workspace" aria-label="Document workspace">
+      <aside class="panel upload-panel">
+        <p class="eyebrow">Add a document</p>
+        <h2>Upload to the library</h2>
+        <p class="section-copy" id="file-limit">Uploads follow the shared feature limits.</p>
+
+        <form class="upload-form" id="upload-form">
+          <label class="file-picker">
+            <span class="file-icon" aria-hidden="true">+</span>
+            <strong id="file-name">Choose a file</strong>
+            <small id="file-size">Binary content is stored in R2</small>
+            <input id="file" type="file" />
+          </label>
+          <label class="field" for="description"><span>Description (optional)</span>
+            <textarea id="description" placeholder="What is this document for?"></textarea>
+          </label>
+          <button class="button primary full-width" id="upload-button" type="submit" disabled>Upload document</button>
+        </form>
+      </aside>
+
+      <section class="panel">
+        <div class="library-heading">
+          <div><p class="eyebrow">Your library</p><h2>Documents</h2></div>
+          <button class="button secondary" id="refresh-button" type="button">Refresh</button>
+        </div>
+
+        <form class="search-form" id="search-form" role="search">
+          <label for="search">Search filenames</label>
+          <div class="search-row">
+            <input id="search" type="search" placeholder="Try report, image, notes..." />
+            <button class="button secondary" id="search-button" type="submit">Search</button>
+          </div>
+        </form>
+
+        <div class="summary-grid" aria-label="Library summary">
+          <div class="summary-card"><span>Documents</span><strong id="document-count">0</strong></div>
+          <div class="summary-card"><span>Stored bytes</span><strong id="stored-bytes">0 B</strong></div>
+          <div class="summary-card"><span>File types</span><strong id="type-count">0</strong></div>
+        </div>
+
+        <div class="notice" id="notice" role="status"></div>
+        <div class="document-list" id="document-list">
+          <div class="empty-state"><span class="empty-mark" aria-hidden="true"></span><h3>Connect to your Worker</h3><p>Enter the shared secret to load document metadata from D1.</p></div>
+        </div>
+      </section>
+    </section>
   </main>
+
+  <footer>Document data-model example / Data-model-neutral platform</footer>
+
+  <script type="module">
+    const KIBIBYTE_BYTES = 1024;
+    const MEBIBYTE_BYTES = KIBIBYTE_BYTES * KIBIBYTE_BYTES;
+    const DOCUMENT_LIMITS = Object.freeze({
+      descriptionCharacters: 500,
+      fileBytes: 5 * MEBIBYTE_BYTES,
+      queryCharacters: 100,
+    });
+    const state = { documents: [], query: "", connected: false, busy: false, pendingDelete: null };
+    const elements = {
+      connectButton: document.querySelector("#connect-button"),
+      connectionForm: document.querySelector("#connection-form"),
+      description: document.querySelector("#description"),
+      documentCount: document.querySelector("#document-count"),
+      file: document.querySelector("#file"),
+      fileName: document.querySelector("#file-name"),
+      fileSize: document.querySelector("#file-size"),
+      fileLimit: document.querySelector("#file-limit"),
+      list: document.querySelector("#document-list"),
+      notice: document.querySelector("#notice"),
+      refreshButton: document.querySelector("#refresh-button"),
+      search: document.querySelector("#search"),
+      searchButton: document.querySelector("#search-button"),
+      searchForm: document.querySelector("#search-form"),
+      secret: document.querySelector("#secret"),
+      storedBytes: document.querySelector("#stored-bytes"),
+      typeCount: document.querySelector("#type-count"),
+      uploadButton: document.querySelector("#upload-button"),
+      uploadForm: document.querySelector("#upload-form"),
+    };
+
+    elements.description.maxLength = DOCUMENT_LIMITS.descriptionCharacters;
+    elements.search.maxLength = DOCUMENT_LIMITS.queryCharacters;
+
+    function formatBytes(bytes) {
+      if (bytes < KIBIBYTE_BYTES) return `${bytes.toLocaleString()} B`;
+      if (bytes < MEBIBYTE_BYTES) return `${(bytes / KIBIBYTE_BYTES).toFixed(1)} KiB`;
+      return `${(bytes / MEBIBYTE_BYTES).toFixed(1)} MiB`;
+    }
+
+    elements.fileLimit.textContent = `Any file type is welcome up to ${formatBytes(DOCUMENT_LIMITS.fileBytes)}.`;
+
+    function formatDate(value) {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    function showNotice(message, kind) {
+      elements.notice.textContent = message;
+      elements.notice.className = `notice visible ${kind}`;
+      elements.notice.setAttribute("role", kind === "error" ? "alert" : "status");
+    }
+
+    function clearNotice() {
+      elements.notice.textContent = "";
+      elements.notice.className = "notice";
+      elements.notice.setAttribute("role", "status");
+    }
+
+    function authHeaders() {
+      const secret = elements.secret.value;
+      if (!secret) throw new Error("Enter the Wrangler shared secret first.");
+      return { authorization: `Bearer ${secret}` };
+    }
+
+    function isRecord(value) {
+      return typeof value === "object" && value !== null && !Array.isArray(value);
+    }
+
+    function parseDocument(value) {
+      if (
+        !isRecord(value) ||
+        typeof value.id !== "string" ||
+        typeof value.name !== "string" ||
+        (value.description !== null && typeof value.description !== "string") ||
+        typeof value.contentType !== "string" ||
+        typeof value.size !== "number" ||
+        !Number.isFinite(value.size) ||
+        value.size < 0 ||
+        typeof value.createdAt !== "string"
+      ) return null;
+      return {
+        id: value.id,
+        name: value.name,
+        description: value.description,
+        contentType: value.contentType,
+        size: value.size,
+        createdAt: value.createdAt,
+      };
+    }
+
+    function parsePayload(value) {
+      if (!isRecord(value)) return { error: "The server returned an unexpected response." };
+      const payload = {};
+      let recognized = false;
+      if (typeof value.error === "string") {
+        payload.error = value.error;
+        recognized = true;
+      }
+      if (typeof value.id === "string") {
+        payload.id = value.id;
+        recognized = true;
+      }
+      if (typeof value.ok === "boolean") {
+        payload.ok = value.ok;
+        recognized = true;
+      }
+      if ("document" in value) {
+        const documentValue = parseDocument(value.document);
+        if (!documentValue) return { error: "The server returned an invalid document." };
+        payload.document = documentValue;
+        recognized = true;
+      }
+      if ("documents" in value) {
+        if (!Array.isArray(value.documents)) return { error: "The server returned an invalid document list." };
+        const documents = [];
+        for (const candidate of value.documents) {
+          const documentValue = parseDocument(candidate);
+          if (!documentValue) return { error: "The server returned an invalid document list." };
+          documents.push(documentValue);
+        }
+        payload.documents = documents;
+        recognized = true;
+      }
+      return recognized ? payload : { error: "The server returned an unexpected response." };
+    }
+
+    async function jsonPayload(response) {
+      try {
+        return parsePayload(await response.json());
+      } catch {
+        return { error: "The server returned an unreadable response." };
+      }
+    }
+
+    async function request(url, init = {}) {
+      const headers = new Headers(init.headers);
+      for (const [name, value] of Object.entries(authHeaders())) headers.set(name, value);
+      const response = await fetch(url, { ...init, cache: "no-store", headers });
+      return response;
+    }
+
+    function element(name, className, text) {
+      const node = document.createElement(name);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function emptyState(title, copy) {
+      const empty = element("div", "empty-state");
+      const mark = element("span", "empty-mark");
+      mark.setAttribute("aria-hidden", "true");
+      empty.append(mark, element("h3", "", title), element("p", "", copy));
+      return empty;
+    }
+
+    function render() {
+      const selectedFile = elements.file.files[0];
+      elements.connectButton.disabled = state.busy;
+      elements.description.disabled = state.busy;
+      elements.file.disabled = state.busy;
+      elements.refreshButton.disabled = state.busy || !state.connected;
+      elements.search.disabled = state.busy || !state.connected;
+      elements.searchButton.disabled = state.busy || !state.connected;
+      elements.secret.disabled = state.busy;
+      elements.uploadButton.disabled = state.busy || !state.connected || !selectedFile || selectedFile.size > DOCUMENT_LIMITS.fileBytes;
+      elements.documentCount.textContent = String(state.documents.length);
+      elements.storedBytes.textContent = formatBytes(state.documents.reduce((total, item) => total + item.size, 0));
+      elements.typeCount.textContent = String(new Set(state.documents.map((item) => item.contentType)).size);
+      elements.list.replaceChildren();
+
+      if (!state.connected) {
+        elements.list.append(emptyState("Connect to your Worker", "Enter the shared secret to load document metadata from D1."));
+        return;
+      }
+
+      if (!state.documents.length) {
+        elements.list.append(emptyState(state.query ? "No matching documents" : "Your library is empty", state.query ? `Nothing matched "${state.query}". Try another filename.` : "Choose a file to exercise D1 and R2 together."));
+        return;
+      }
+
+      for (const item of state.documents) {
+        const card = element("article", "document-card");
+        const heading = element("div", "document-heading");
+        const copy = element("div");
+        copy.append(element("h3", "", item.name), element("p", "", item.description || "No description"));
+        heading.append(copy, element("span", "type-pill", item.contentType || "Unknown type"));
+
+        const metadata = element("dl", "document-meta");
+        for (const [label, value] of [["Size", formatBytes(item.size)], ["Added", formatDate(item.createdAt)], ["Storage", "D1 + R2"]]) {
+          const group = element("div");
+          group.append(element("dt", "", label), element("dd", "", value));
+          metadata.append(group);
+        }
+
+        const actions = element("div", "document-actions");
+        const downloadButton = element("button", "button secondary", "Download");
+        downloadButton.type = "button";
+        downloadButton.disabled = state.busy;
+        downloadButton.addEventListener("click", () => downloadDocument(item));
+        const deleteButton = element("button", state.pendingDelete === item.id ? "button danger" : "button quiet danger-text", state.pendingDelete === item.id ? "Confirm delete" : "Delete");
+        deleteButton.type = "button";
+        deleteButton.disabled = state.busy;
+        deleteButton.addEventListener("click", () => {
+          if (state.pendingDelete === item.id) void deleteDocument(item);
+          else {
+            state.pendingDelete = item.id;
+            render();
+          }
+        });
+        actions.append(downloadButton, deleteButton);
+        if (state.pendingDelete === item.id) {
+          const cancelButton = element("button", "button quiet", "Cancel");
+          cancelButton.type = "button";
+          cancelButton.disabled = state.busy;
+          cancelButton.addEventListener("click", () => {
+            state.pendingDelete = null;
+            render();
+          });
+          actions.append(cancelButton);
+        }
+        card.append(heading, metadata, actions);
+        elements.list.append(card);
+      }
+    }
+
+    async function loadDocuments(query = state.query) {
+      clearNotice();
+      state.busy = true;
+      render();
+      try {
+        const suffix = query ? `?q=${encodeURIComponent(query)}` : "";
+        const response = await request(`/api/documents${suffix}`);
+        const payload = await jsonPayload(response);
+        if (!response.ok || payload.error) throw new Error(payload.error || `Request failed (${response.status}).`);
+        if (!payload.documents) throw new Error("The server returned an invalid document list.");
+        state.documents = payload.documents;
+        state.query = query;
+        state.connected = true;
+      } catch (error) {
+        showNotice(error instanceof Error ? error.message : "Documents could not be loaded.", "error");
+      } finally {
+        state.busy = false;
+        render();
+      }
+    }
+
+    async function uploadDocument(event) {
+      event.preventDefault();
+      const file = elements.file.files[0];
+      if (!file) return showNotice("Choose a file to upload.", "error");
+      if (file.size > DOCUMENT_LIMITS.fileBytes) return showNotice(`Choose a file no larger than ${formatBytes(DOCUMENT_LIMITS.fileBytes)}.`, "error");
+      clearNotice();
+      state.busy = true;
+      elements.uploadButton.textContent = "Uploading...";
+      render();
+      try {
+        const form = new FormData();
+        form.set("file", file);
+        if (elements.description.value.trim()) form.set("description", elements.description.value.trim());
+        const response = await request("/api/documents", { method: "POST", body: form });
+        const payload = await jsonPayload(response);
+        if (!response.ok || payload.error) throw new Error(payload.error || `Upload failed (${response.status}).`);
+        if (!payload.document) throw new Error("The server returned an invalid document.");
+        elements.file.value = "";
+        elements.description.value = "";
+        elements.fileName.textContent = "Choose a file";
+        elements.fileSize.textContent = "Binary content is stored in R2";
+        elements.search.value = "";
+        await loadDocuments("");
+        showNotice(`${payload.document.name} was uploaded.`, "success");
+      } catch (error) {
+        showNotice(error instanceof Error ? error.message : "The upload failed.", "error");
+      } finally {
+        state.busy = false;
+        elements.uploadButton.textContent = "Upload document";
+        render();
+      }
+    }
+
+    async function downloadDocument(item) {
+      clearNotice();
+      state.busy = true;
+      render();
+      try {
+        const response = await request(`/api/documents/${encodeURIComponent(item.id)}`);
+        if (!response.ok) {
+          const payload = await jsonPayload(response);
+          throw new Error(payload.error || `Download failed (${response.status}).`);
+        }
+        const objectUrl = URL.createObjectURL(await response.blob());
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = item.name;
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+        showNotice(`${item.name} was downloaded.`, "success");
+      } catch (error) {
+        showNotice(error instanceof Error ? error.message : "The download failed.", "error");
+      } finally {
+        state.busy = false;
+        render();
+      }
+    }
+
+    async function deleteDocument(item) {
+      clearNotice();
+      state.busy = true;
+      render();
+      try {
+        const response = await request(`/api/documents/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+        const payload = await jsonPayload(response);
+        if (!response.ok || payload.error) throw new Error(payload.error || `Delete failed (${response.status}).`);
+        if (payload.ok !== true) throw new Error("The server returned an invalid delete response.");
+        state.pendingDelete = null;
+        await loadDocuments(state.query);
+        showNotice(`${item.name} was deleted.`, "success");
+      } catch (error) {
+        showNotice(error instanceof Error ? error.message : "The document could not be deleted.", "error");
+      } finally {
+        state.busy = false;
+        render();
+      }
+    }
+
+    elements.connectionForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void loadDocuments("");
+    });
+    elements.uploadForm.addEventListener("submit", uploadDocument);
+    elements.searchForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void loadDocuments(elements.search.value.trim());
+    });
+    elements.refreshButton.addEventListener("click", () => void loadDocuments(state.query));
+    elements.secret.addEventListener("input", () => {
+      state.connected = false;
+      state.documents = [];
+      state.pendingDelete = null;
+      state.query = "";
+      clearNotice();
+      render();
+    });
+    elements.file.addEventListener("change", () => {
+      const file = elements.file.files[0];
+      elements.fileName.textContent = file ? file.name : "Choose a file";
+      elements.fileSize.textContent = file ? formatBytes(file.size) : "Binary content is stored in R2";
+      if (file && file.size > DOCUMENT_LIMITS.fileBytes) {
+        showNotice(`Choose a file no larger than ${formatBytes(DOCUMENT_LIMITS.fileBytes)}.`, "error");
+      } else {
+        clearNotice();
+      }
+      render();
+    });
+    render();
+  </script>
 </body>
 </html>
