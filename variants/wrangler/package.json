@@ -19,10 +19,13 @@
     "hono": "4.13.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260810.1",
+    "@cloudflare/workers-types": "5.20260822.1",
     "@types/node": "22.19.19",
     "drizzle-kit": "0.31.10",
     "typescript": "5.9.3",
-    "wrangler": "4.120.1"
+    "wrangler": "4.125.0"
+  },
+  "overrides": {
+    "esbuild": "0.28.2"
   }
 }
