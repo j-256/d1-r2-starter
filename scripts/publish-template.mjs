@@ -5,12 +5,15 @@ import {
     parsePublishArguments,
     publishTemplates,
     publishUsage,
+    resolvePublishInvocation,
 } from "./publish-template-lib.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 try {
-    const options = parsePublishArguments(process.argv.slice(2));
+    const invocation = resolvePublishInvocation(process.argv.slice(2));
+    if (invocation.notice) console.error(invocation.notice);
+    const options = parsePublishArguments(invocation.args);
     if (options.help) {
         console.log(publishUsage());
     } else {

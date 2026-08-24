@@ -41,6 +41,16 @@ const HISTORY_MODES = Object.freeze({
     append: "append",
     fresh: "fresh",
 });
+const DEFAULT_PUBLISH_ARGUMENTS = Object.freeze([
+    ALL_VARIANTS,
+    "--history",
+    HISTORY_MODES.append,
+    "--replay",
+]);
+const DEFAULT_PUBLISH_COMMAND =
+    `npm run template:publish -- ${DEFAULT_PUBLISH_ARGUMENTS.join(" ")}`;
+const DEFAULT_PUBLISH_NOTICE =
+    `No publish arguments supplied. Running: ${DEFAULT_PUBLISH_COMMAND}`;
 const INITIAL_COMMIT_MESSAGE = "Initial commit";
 const NOT_FOUND_STATUS = 404;
 const PUBLISH_TEMP_PREFIX = "d1-r2-template-publish-";
@@ -219,6 +229,16 @@ export function parseHttpStatus(output) {
     return errorMatch?.[1] ? Number.parseInt(errorMatch[1], 10) : null;
 }
 
+export function resolvePublishInvocation(args) {
+    if (args.length > 0) {
+        return { args: [...args], notice: undefined };
+    }
+    return {
+        args: [...DEFAULT_PUBLISH_ARGUMENTS],
+        notice: DEFAULT_PUBLISH_NOTICE,
+    };
+}
+
 export function parsePublishArguments(args) {
     let clobber = false;
     let help = false;
@@ -348,7 +368,12 @@ export function parsePublishArguments(args) {
 export function publishUsage() {
     return [
         "Usage:",
+        "  npm run template:publish",
         "  npm run template:publish -- <all|openai|wrangler> [--history append|fresh] [--clobber] [--message <message>] [--replay] [--replay-from <revision>] [--yes]",
+        "",
+        "Default:",
+        `  ${DEFAULT_PUBLISH_COMMAND}`,
+        "  A bare invocation prints this expanded command to stderr before running it.",
         "",
         "Options:",
         "  all                  Process both templates explicitly; both is an alias",
