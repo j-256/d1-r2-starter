@@ -70,6 +70,11 @@ export const OPENAI_PACKAGE_SCRIPT_ALLOWLIST = Object.freeze([
     "db:generate",
 ]);
 
+// Files the Sites edition owns separately from the factory presentation
+export const OPENAI_OVERLAY_FILES = Object.freeze([
+    "README.md",
+]);
+
 // Forbidden tokens for the WRANGLER tree (contents and paths), case-insensitive
 export const RESIDUE_PATTERN = /oai-|\.openai|chatgpt|siwc|vinext|codex-preview/i;
 const RESIDUE_ALLOWLIST_BY_PATH = Object.freeze({
@@ -175,6 +180,17 @@ export function emitOpenai(repoRoot, outDir) {
         const from = join(repoRoot, entry.name);
         const to = join(outDir, entry.name);
         copyGeneratedPath(from, to);
+    }
+
+    // Replace factory-facing files with the Sites edition overlay
+    const overlay = join(repoRoot, "variants", "openai");
+    for (const file of OPENAI_OVERLAY_FILES) {
+        if (!existsSync(join(overlay, file))) {
+            throw new Error(`Missing OpenAI package file: ${file}`);
+        }
+    }
+    for (const entry of readdirSync(overlay, { withFileTypes: true })) {
+        copyGeneratedPath(join(overlay, entry.name), join(outDir, entry.name));
     }
 
     // Keep only runtime scripts in the copied scripts/ directory

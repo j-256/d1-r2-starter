@@ -17,6 +17,7 @@ import {
     emitOpenai,
     emitWrangler,
     OPENAI_DROP_FILES,
+    OPENAI_OVERLAY_FILES,
     OPENAI_PACKAGE_SCRIPT_ALLOWLIST,
     OPENAI_SCRIPT_ALLOWLIST,
     scanForResidue,
@@ -38,6 +39,13 @@ const REQUIRED_SITE_MIGRATIONS = Object.freeze([
 
 function tempTree() {
     return mkdtempSync(join(tmpdir(), "gen-guard-"));
+}
+
+function writeOpenaiOverlay(root, readme = "# Sites edition\n") {
+    const overlay = join(root, "variants", "openai");
+    mkdirSync(overlay, { recursive: true });
+    writeFileSync(join(overlay, "README.md"), readme);
+    return overlay;
 }
 
 function writeWranglerFactoryFixture(root) {
@@ -132,6 +140,7 @@ test("emitOpenai removes the factory project_id from the reusable manifest", () 
         const output = join(root, "output");
         mkdirSync(join(source, ".openai"), { recursive: true });
         mkdirSync(join(source, "scripts"));
+        writeOpenaiOverlay(source);
         writeFileSync(
             join(source, "package.json"),
             JSON.stringify({ scripts: { build: "vinext build" } })
@@ -160,6 +169,30 @@ test("emitOpenai removes the factory project_id from the reusable manifest", () 
     }
 });
 
+test("emitOpenai replaces the factory README with the edition README", () => {
+    const root = tempTree();
+    try {
+        const source = join(root, "source");
+        const output = join(root, "output");
+        mkdirSync(join(source, ".openai"), { recursive: true });
+        mkdirSync(join(source, "scripts"));
+        writeFileSync(join(source, "README.md"), "# Source factory\n");
+        writeOpenaiOverlay(source, "# ChatGPT Sites edition\n");
+        writeFileSync(join(source, "package.json"), "{}\n");
+        writeFileSync(join(source, ".openai", "hosting.json"), "{}\n");
+
+        emitOpenai(source, output);
+
+        assert.equal(
+            readFileSync(join(output, "README.md"), "utf8"),
+            "# ChatGPT Sites edition\n"
+        );
+        assert.equal(OPENAI_OVERLAY_FILES.includes("README.md"), true);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("emitOpenai allowlists runtime scripts and package commands", () => {
     const root = tempTree();
     try {
@@ -167,6 +200,7 @@ test("emitOpenai allowlists runtime scripts and package commands", () => {
         const output = join(root, "output");
         mkdirSync(join(source, ".openai"), { recursive: true });
         mkdirSync(join(source, "scripts"));
+        writeOpenaiOverlay(source);
         writeFileSync(
             join(source, "scripts", "sites-env.sh"),
             "#!/bin/bash\n"
@@ -215,6 +249,7 @@ test("emitOpenai keeps generated CI and drops factory Dependabot", () => {
         mkdirSync(join(source, ".github", "workflows"), { recursive: true });
         mkdirSync(join(source, ".openai"));
         mkdirSync(join(source, "scripts"));
+        writeOpenaiOverlay(source);
         writeFileSync(
             join(source, ".github", "workflows", "ci.yml"),
             "name: CI\n"
