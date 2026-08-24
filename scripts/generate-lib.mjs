@@ -19,7 +19,7 @@ export const SHARED_PATHS = [
     "db",
     "drizzle",
     "drizzle.config.ts",
-    "tests",
+    "test",
     "LICENSE",
 ];
 

@@ -11,7 +11,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-sqlite --experimental-strip-types --test tests/*.test.ts",
+    "test": "node --experimental-sqlite --experimental-strip-types --test test/*.test.ts",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

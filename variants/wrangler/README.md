@@ -75,7 +75,7 @@ D1 metadata    ObjectStore -> R2 bytes
 - `app-context.ts` and `app-services.ts` carry app-specific request state and compose the example feature with D1 and R2, leaving the lower-level platform modules independent of the document model.
 - `src/worker.ts` is the thin Hono composition root. It supplies bindings and the bearer-secret authorizer, then delegates to the shared handlers.
 - `db/schema.ts` exports feature schemas, and `drizzle/` contains the migration history applied before application code depends on it.
-- `tests/` exercises the shared feature against fakes and an in-memory SQLite database, including binary data that is not valid UTF-8.
+- `test/` exercises the shared feature against fakes and an in-memory SQLite database, including binary data that is not valid UTF-8.
 
 The shared handlers use standard `Request` and `Response` objects, so feature behavior is not coupled to Hono context objects or Next.js route helpers.
 

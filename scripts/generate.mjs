@@ -20,12 +20,12 @@ const TEST_FLAGS = [
 
 function runInTreeTests(treeDir, label) {
     console.log(`  running buildless suite in ${label} ...`);
-    const testsDir = join(treeDir, "tests");
-    const testFiles = readdirSync(testsDir)
+    const testDir = join(treeDir, "test");
+    const testFiles = readdirSync(testDir)
         .filter((name) => name.endsWith(".test.ts"))
-        .map((name) => join("tests", name));
+        .map((name) => join("test", name));
     if (testFiles.length === 0) {
-        console.error(`  no test files found in ${label}/tests`);
+        console.error(`  no test files found in ${label}/test`);
         process.exit(1);
     }
     execFileSync(process.execPath, [...TEST_FLAGS, ...testFiles], {
