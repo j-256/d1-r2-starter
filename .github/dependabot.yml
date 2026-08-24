@@ -1,0 +1,44 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: friday
+      time: "08:00"
+      timezone: America/Chicago
+    groups:
+      all-dependencies:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore
+      include: scope
+  - package-ecosystem: npm
+    directory: /variants/wrangler
+    schedule:
+      interval: weekly
+      day: friday
+      time: "08:00"
+      timezone: America/Chicago
+    groups:
+      all-dependencies:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore
+      include: scope
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: friday
+      time: "08:00"
+      timezone: America/Chicago
+    groups:
+      all-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore
+      include: scope

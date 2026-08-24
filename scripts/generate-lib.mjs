@@ -50,10 +50,11 @@ export const OPENAI_SCRIPT_ALLOWLIST = Object.freeze([
 
 // Factory-only files that live at non-dropped root paths and so survive the
 // copy-root, but must not ship in the openai template. Repo-relative POSIX
-// paths, scrubbed after the copy in emitOpenai. docs/PUBLISH.md is the
-// maintainer publish runbook: it describes this repo as the private factory
-// and references the sibling wrangler variant, so it is not template content
-export const OPENAI_DROP_FILES = ["docs/PUBLISH.md"];
+// paths, scrubbed after the copy in emitOpenai
+export const OPENAI_DROP_FILES = [
+    ".github/dependabot.yml",
+    "docs/PUBLISH.md",
+];
 
 // Only these package commands belong in the emitted OpenAI template
 export const OPENAI_PACKAGE_SCRIPT_ALLOWLIST = Object.freeze([

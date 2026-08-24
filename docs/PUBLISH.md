@@ -2,6 +2,14 @@
 
 This repository is the source factory for two GitHub templates: `d1-r2-starter-openai` and `d1-r2-starter-wrangler`. Make changes in the factory, regenerate the templates, and publish the generated outputs. Do not edit the template repositories directly because the next publication replaces their working trees from the factory output.
 
+## Security and CI ownership
+
+Dependency version updates are factory-owned. The factory's `.github/dependabot.yml` covers its root lockfile, the Wrangler overlay lockfile, and GitHub Actions. Generated templates do not receive a Dependabot version-update configuration.
+
+CI and GitHub security scanning still run independently in the factory and each published template because generated layout, imports, runtime composition, and repository settings can expose findings that are not observable in the factory's source layout. The OpenAI workflow is copied from the factory, while the Wrangler workflow is emitted from its overlay.
+
+Treat downstream alerts as reports against generated products, but author dependency and code fixes in this factory and publish them through the normal template workflow. Keep automated Dependabot security updates disabled in generated repositories so GitHub cannot create output-only fixes that the next publication would replace.
+
 The short version: use replay to preserve factory commit boundaries in template history; omit replay to publish one net snapshot commit per changed template.
 
 ## How publication works

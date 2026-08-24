@@ -16,6 +16,7 @@ import {
     copyGeneratedPath,
     emitOpenai,
     emitWrangler,
+    OPENAI_DROP_FILES,
     OPENAI_PACKAGE_SCRIPT_ALLOWLIST,
     OPENAI_SCRIPT_ALLOWLIST,
     scanForResidue,
@@ -206,6 +207,41 @@ test("emitOpenai allowlists runtime scripts and package commands", () => {
     }
 });
 
+test("emitOpenai keeps generated CI and drops factory Dependabot", () => {
+    const root = tempTree();
+    try {
+        const source = join(root, "source");
+        const output = join(root, "output");
+        mkdirSync(join(source, ".github", "workflows"), { recursive: true });
+        mkdirSync(join(source, ".openai"));
+        mkdirSync(join(source, "scripts"));
+        writeFileSync(
+            join(source, ".github", "workflows", "ci.yml"),
+            "name: CI\n"
+        );
+        writeFileSync(
+            join(source, ".github", "dependabot.yml"),
+            "version: 2\n"
+        );
+        writeFileSync(join(source, ".openai", "hosting.json"), "{}\n");
+        writeFileSync(join(source, "package.json"), "{}\n");
+
+        emitOpenai(source, output);
+
+        assert.equal(
+            existsSync(join(output, ".github", "workflows", "ci.yml")),
+            true
+        );
+        assert.equal(
+            existsSync(join(output, ".github", "dependabot.yml")),
+            false
+        );
+        assert.equal(OPENAI_DROP_FILES.includes(".github/dependabot.yml"), true);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("emitWrangler requires and copies a package lock", () => {
     const root = tempTree();
     try {
@@ -219,8 +255,17 @@ test("emitWrangler requires and copies a package lock", () => {
         );
 
         writeFileSync(join(overlay, "package-lock.json"), "{}\n");
+        mkdirSync(join(overlay, ".github", "workflows"), { recursive: true });
+        writeFileSync(
+            join(overlay, ".github", "workflows", "ci.yml"),
+            "name: CI\n"
+        );
         emitWrangler(source, output);
         assert.equal(existsSync(join(output, "package-lock.json")), true);
+        assert.equal(
+            existsSync(join(output, ".github", "workflows", "ci.yml")),
+            true
+        );
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -361,6 +406,24 @@ test("scanOpenaiResidue flags a leaked factory-only docs/PUBLISH.md", () => {
         writeFileSync(join(root, "docs", "PUBLISH.md"), "# factory only\n");
         const violations = scanOpenaiResidue(root);
         assert.equal(violations.some((v) => v.includes("docs/PUBLISH.md")), true);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("scanOpenaiResidue flags a leaked factory-only Dependabot config", () => {
+    const root = tempTree();
+    try {
+        writeCleanOpenaiTree(root);
+        mkdirSync(join(root, ".github"));
+        writeFileSync(join(root, ".github", "dependabot.yml"), "version: 2\n");
+        const violations = scanOpenaiResidue(root);
+        assert.equal(
+            violations.some((violation) =>
+                violation.includes(".github/dependabot.yml")
+            ),
+            true
+        );
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
