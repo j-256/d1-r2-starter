@@ -287,7 +287,7 @@ npm run template:publish -- all --history fresh --yes
 - [ ] Shared core changes are complete and committed on `main`
 - [ ] Factory checkpoint subjects and bodies make sense in each downstream template that will receive them
 - [ ] The Wrangler tree has been verified under its own toolchain with typecheck, migration application, and a `wrangler dev` smoke test
-- [ ] The OpenAI Sites artifact has been confirmed with `npm run test:build` or through the Sites save-version workflow
+- [ ] The ChatGPT Sites artifact has been confirmed with `npm run test:build` or through the Sites save-version workflow
 - [ ] `dist/openai/.openai/hosting.json` has no `project_id`, allowing Sites to provision a new project from the reusable template
 - [ ] Each generated tree contains the MIT license and matching package metadata
 - [ ] The generated Wrangler tree contains no OpenAI, ChatGPT, Next.js, React, or Vinext residue

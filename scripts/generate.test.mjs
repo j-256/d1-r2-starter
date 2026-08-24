@@ -344,6 +344,36 @@ test("scanForResidue flags a forbidden token in file contents", () => {
     }
 });
 
+test("scanForResidue allows the ChatGPT Sites peer name only in README", () => {
+    const root = tempTree();
+    try {
+        writeFileSync(join(root, "README.md"), "Use ChatGPT Sites.\n");
+        assert.deepEqual(scanForResidue(root), []);
+
+        writeFileSync(
+            join(root, "leak.ts"),
+            'export const peer = "ChatGPT Sites";\n'
+        );
+        const violations = scanForResidue(root);
+        assert.equal(violations.length, 1);
+        assert.match(violations[0], /leak\.ts/);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("scanForResidue rejects other ChatGPT README content", () => {
+    const root = tempTree();
+    try {
+        writeFileSync(join(root, "README.md"), "Sign in with ChatGPT.\n");
+        const violations = scanForResidue(root);
+        assert.equal(violations.length, 1);
+        assert.match(violations[0], /README\.md/);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("scanForResidue flags a forbidden token in a path", () => {
     const root = tempTree();
     try {

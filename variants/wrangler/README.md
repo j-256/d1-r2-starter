@@ -6,13 +6,13 @@ This TypeScript starter pairs queryable metadata in [Cloudflare D1](https://deve
 
 The platform shell is data-model-neutral. `features/documents/` is the deliberately concrete example that shows how D1 and R2 work together.
 
-Prefer a managed hosting workflow? The [OpenAI Sites edition](https://github.com/j-256/d1-r2-starter-openai) is maintained as a first-class peer with the same application core.
+Prefer a managed hosting workflow? The [ChatGPT Sites edition](https://github.com/j-256/d1-r2-starter-openai) is maintained as a first-class peer with the same application core.
 
 ## What you get
 
 - **A useful vertical slice.** D1 stores searchable document metadata while R2 stores the original binary bytes and content type.
 - **A replaceable feature, not a prescribed schema.** Routes and persistence live behind `DocumentService`, `DocumentRepository`, and `ObjectStore` contracts.
-- **Two first-class runtime editions.** This Wrangler/Hono edition and the OpenAI Sites edition use the same feature, validation, persistence, HTTP semantics, migrations, and tests. Only runtime composition, routing glue, authorization policy, and UI are edition-specific.
+- **Two first-class runtime editions.** This Wrangler/Hono edition and the ChatGPT Sites edition use the same feature, validation, persistence, HTTP semantics, migrations, and tests. Only runtime composition, routing glue, authorization policy, and UI are edition-specific.
 - **Auth that fails closed.** Every `/api` request requires the configured bearer secret. A missing secret denies every request.
 - **Deterministic setup and buildless tests.** The lockfile supports `npm ci`, while the shared core suite can also run directly with Node without installing framework dependencies.
 
