@@ -72,6 +72,9 @@ export const OPENAI_PACKAGE_SCRIPT_ALLOWLIST = Object.freeze([
 
 // Forbidden tokens for the WRANGLER tree (contents and paths), case-insensitive
 export const RESIDUE_PATTERN = /oai-|\.openai|chatgpt|siwc|vinext|codex-preview/i;
+const RESIDUE_ALLOWLIST_BY_PATH = Object.freeze({
+    "README.md": Object.freeze(["ChatGPT Sites"]),
+});
 
 // Package names banned from the WRANGLER package.json dependency maps
 export const FORBIDDEN_DEPS = ["next", "react", "react-dom", "vinext"];
@@ -109,6 +112,14 @@ function walk(root) {
     return files;
 }
 
+function removeAllowedResidue(rel, contents) {
+    const allowedPhrases = RESIDUE_ALLOWLIST_BY_PATH[rel] ?? [];
+    return allowedPhrases.reduce(
+        (candidate, phrase) => candidate.replaceAll(phrase, ""),
+        contents
+    );
+}
+
 /**
  * Scans an emitted tree for forbidden residue. Returns an array of
  * "relpath: reason" strings; empty means clean. Checks: every relative path
@@ -127,7 +138,7 @@ export function scanForResidue(root) {
         if (BINARY_EXT.test(rel)) continue;
 
         const contents = readFileSync(absolute, "utf8");
-        const match = contents.match(RESIDUE_PATTERN);
+        const match = removeAllowedResidue(rel, contents).match(RESIDUE_PATTERN);
         if (match) {
             violations.push(`${rel}: forbidden token "${match[0]}"`);
         }
