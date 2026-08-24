@@ -25,6 +25,7 @@ import {
     publishUsage,
     repositoryVariableWriteArguments,
     resolveCommitMessage,
+    resolvePublishInvocation,
     syncGeneratedTree,
 } from "./publish-template-lib.mjs";
 
@@ -313,7 +314,29 @@ function fakeDependencies(options = {}) {
     };
 }
 
-test("parsePublishArguments requires an explicit template target", () => {
+test("resolvePublishInvocation defaults a bare command to append replay", () => {
+    const invocation = resolvePublishInvocation([]);
+    assert.deepEqual(invocation, {
+        args: ["all", "--history", "append", "--replay"],
+        notice: "No publish arguments supplied. Running: npm run template:publish -- all --history append --replay",
+    });
+    assert.deepEqual(parsePublishArguments(invocation.args), {
+        clobber: false,
+        help: false,
+        history: "append",
+        message: undefined,
+        replay: true,
+        replayFrom: undefined,
+        variant: "all",
+        yes: false,
+    });
+    assert.deepEqual(resolvePublishInvocation(["openai"]), {
+        args: ["openai"],
+        notice: undefined,
+    });
+});
+
+test("parsePublishArguments requires a target after invocation resolution", () => {
     assert.throws(
         () => parsePublishArguments([]),
         /Pass all for both templates/
@@ -464,6 +487,11 @@ test("parsePublishArguments rejects unknown variants and malformed options", () 
 
 test("publishUsage documents history modes and persistent backups", () => {
     const usage = publishUsage();
+    assert.match(
+        usage,
+        /npm run template:publish -- all --history append --replay/
+    );
+    assert.match(usage, /prints this expanded command to stderr/);
     assert.match(usage, /all\|openai\|wrangler/);
     assert.match(usage, /both is an alias/);
     assert.match(usage, /--history append\|fresh/);

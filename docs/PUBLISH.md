@@ -6,19 +6,19 @@ The short version: use replay to preserve factory commit boundaries in template 
 
 ## How publication works
 
-From a clean `main` branch, choose the publication target explicitly. Use `all` to process both templates:
+From a clean `main` branch, the bare command uses the normal checkpoint-preserving workflow for both templates:
 
 ```bash
-npm run template:publish -- all
+npm run template:publish
 ```
 
-Omitting the target is an error rather than an implicit request to publish both repositories. `both` is accepted as an explicit compatibility alias for `all`:
+Before running any checks or publication work, the publisher prints its expanded default command to stderr:
 
 ```bash
-npm run template:publish -- both
+npm run template:publish -- all --history append --replay
 ```
 
-Pass `openai` or `wrangler` when you want to limit the run to one template:
+This default retains each downstream repository's history, regenerates every factory checkpoint after its recorded cursor, and still asks for final publication approval. Once any arguments are supplied, continue to choose the target explicitly with `all`, `openai`, or `wrangler`; `both` remains a compatibility alias for `all`:
 
 ```bash
 npm run template:publish -- openai
@@ -70,7 +70,7 @@ These scenarios assume the reviewed factory changes are committed on clean `main
 Use recorded replay for the normal checkpoint-preserving workflow:
 
 ```bash
-npm run template:publish -- all --history append --replay
+npm run template:publish
 ```
 
 The publisher regenerates both editions at every factory checkpoint after each template's cursor. A shared checkpoint can become a commit in both template repositories, an OpenAI-only checkpoint appears only in OpenAI, and a Wrangler-only checkpoint appears only in Wrangler. A checkpoint that produces no generated difference for an edition is skipped there. Each changed template repository receives its complete relevant sequence in one push, then its cursor advances to factory `HEAD`.
@@ -110,7 +110,7 @@ For append history, that revision must generate the exact tree already published
 Run recorded replay normally even when the intervening factory commits only change publisher tooling, tests, or other factory-owned files:
 
 ```bash
-npm run template:publish -- all --history append --replay
+npm run template:publish
 ```
 
 If no checkpoint changes a generated edition, that template receives no commit and no push. The publisher still verifies the generated tree and advances its factory-owned cursor, so the same irrelevant checkpoints do not need to be reconsidered later.
@@ -136,7 +136,7 @@ Both commands force-push with a lease and use the verified recovery-mirror lifec
 Use checkpoint replay when the template repository's maintainer history should teach the architecture in the same deliberate steps as the factory. For routine publication, let the publisher start each selected template from its own last verified factory revision:
 
 ```bash
-npm run template:publish -- all --history append --replay
+npm run template:publish
 ```
 
 Replay is automatic rather than an interactive cherry-pick session. For each selected template, the publisher:
