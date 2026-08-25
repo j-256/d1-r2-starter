@@ -83,6 +83,12 @@ npm run template:publish
 
 It requires a clean `main` whose commit matches `origin/main`, shows every downstream diff, asks for publication approval, verifies the resulting remote commits and template settings, and only then advances each factory-owned cursor.
 
+## Releases
+
+Factory releases use Semantic Versioning independently of downstream template publication. Before `1.0.0`, a minor version may change the reusable template contract and a patch version is reserved for compatible fixes.
+
+Use `npm version` as the only release entrypoint. To publish the version already declared in `package.json`, run `npm version "$(node -p 'require("./package.json").version')" --allow-same-version`; later releases use `npm version <major|minor|patch>`. Both forms run the clean-main and remote-synchronization guard, repeat the complete release gate, create the version commit and tag, and push both refs atomically. The tag-triggered GitHub Actions workflow verifies the exact tagged factory and creates the published GitHub Release; an explicit workflow dispatch can safely retry an existing tag.
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
