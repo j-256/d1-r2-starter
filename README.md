@@ -2,6 +2,8 @@
 
 One source tree produces two ready-to-use TypeScript starters for pairing searchable metadata in [Cloudflare D1](https://developers.cloudflare.com/d1/) with binary file content in [Cloudflare R2](https://developers.cloudflare.com/r2/).
 
+![D1 and R2 document library](docs/screenshots/cover.png)
+
 This repository is the canonical source, test, and publication history for both editions. Start a project from one of the generated template repositories:
 
 | Edition | Runtime | Template |
