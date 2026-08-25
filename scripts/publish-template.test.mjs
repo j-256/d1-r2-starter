@@ -32,7 +32,7 @@ import {
 const UPDATE_MESSAGE = "Refresh generated template";
 const UPDATE_MESSAGE_WITH_BODY = `${UPDATE_MESSAGE}\n\nExplain the generated boundary`;
 const HTTP_NOT_FOUND = 404;
-const FACTORY_REPOSITORY = "j-256/d1-r2-starter";
+const FACTORY_REPOSITORY = "j-256/d1-r2-starter-factory";
 const OPENAI_REPOSITORY = "j-256/d1-r2-starter-openai";
 const WRANGLER_REPOSITORY = "j-256/d1-r2-starter-wrangler";
 

@@ -6,7 +6,7 @@ This TypeScript starter pairs queryable metadata in [Cloudflare D1](https://deve
 
 The platform shell is data-model-neutral. `features/documents/` is the deliberately concrete example that shows how D1 and R2 work together.
 
-> **Generated edition.** This ready-to-use template is produced by the [D1 + R2 starter factory](https://github.com/j-256/d1-r2-starter). Report starter issues and propose shared changes in the factory; use this repository to create a new Cloudflare Worker.
+> **Generated edition.** This ready-to-use template is produced by the [D1 + R2 starter factory](https://github.com/j-256/d1-r2-starter-factory). Report starter issues and propose shared changes in the factory; use this repository to create a new Cloudflare Worker.
 
 Prefer a managed hosting workflow? The [ChatGPT Sites edition](https://github.com/j-256/d1-r2-starter-openai) is maintained as a first-class peer with the same application core.
 

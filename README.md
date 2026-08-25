@@ -42,7 +42,7 @@ shared feature, platform contracts, migrations, and tests
 - `scripts/generate.mjs` emits both complete trees under `dist/` and fails if either retains forbidden residue.
 - `scripts/publish-template.mjs` compares, prepares, publishes, and verifies the template repositories.
 
-The generated repositories are publication outputs. Report issues and propose source changes [in this factory](https://github.com/j-256/d1-r2-starter/issues) rather than editing a template repository directly.
+The generated repositories are publication outputs. Report issues and propose source changes [in this factory](https://github.com/j-256/d1-r2-starter-factory/issues) rather than editing a template repository directly.
 
 ## Develop and verify
 
