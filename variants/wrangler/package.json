@@ -16,13 +16,13 @@
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
-    "hono": "4.13.1"
+    "hono": "4.13.4"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260822.1",
-    "@types/node": "22.19.19",
+    "@cloudflare/workers-types": "5.20260825.1",
+    "@types/node": "26.3.0",
     "drizzle-kit": "0.31.10",
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "wrangler": "4.125.0"
   },
   "overrides": {
