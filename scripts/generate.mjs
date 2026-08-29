@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -12,23 +12,9 @@ import {
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(repoRoot, "dist");
 
-const TEST_FLAGS = [
-    "--experimental-sqlite",
-    "--experimental-strip-types",
-    "--test",
-];
-
 function runInTreeTests(treeDir, label) {
-    console.log(`  running buildless suite in ${label} ...`);
-    const testDir = join(treeDir, "test");
-    const testFiles = readdirSync(testDir)
-        .filter((name) => name.endsWith(".test.ts"))
-        .map((name) => join("test", name));
-    if (testFiles.length === 0) {
-        console.error(`  no test files found in ${label}/test`);
-        process.exit(1);
-    }
-    execFileSync(process.execPath, [...TEST_FLAGS, ...testFiles], {
+    console.log(`  running package tests in ${label} ...`);
+    execFileSync("npm", ["test"], {
         cwd: treeDir,
         stdio: "inherit",
     });

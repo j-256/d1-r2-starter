@@ -43,6 +43,7 @@ export const OPENAI_DROP = [
 // Only these runtime scripts belong in the emitted OpenAI template
 export const OPENAI_SCRIPT_ALLOWLIST = Object.freeze([
     "build-verified.sh",
+    "check-docs-cover.mjs",
     "install-ci.sh",
     "sites-env.sh",
     "validate-artifact.sh",
@@ -62,7 +63,9 @@ export const OPENAI_PACKAGE_SCRIPT_ALLOWLIST = Object.freeze([
     "dev",
     "build",
     "start",
+    "check:docs-cover",
     "test",
+    "test:unit",
     "test:build",
     "validate:artifact",
     "lint",

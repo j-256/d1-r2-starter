@@ -206,6 +206,10 @@ test("emitOpenai allowlists runtime scripts and package commands", () => {
             "#!/bin/bash\n"
         );
         writeFileSync(
+            join(source, "scripts", "check-docs-cover.mjs"),
+            "export {};\n"
+        );
+        writeFileSync(
             join(source, "scripts", "future-factory-tool.mjs"),
             "export {};\n"
         );
@@ -214,6 +218,9 @@ test("emitOpenai allowlists runtime scripts and package commands", () => {
             JSON.stringify({
                 scripts: {
                     build: "vinext build",
+                    "check:docs-cover": "node scripts/check-docs-cover.mjs",
+                    test: "npm run test:unit && npm run check:docs-cover",
+                    "test:unit": "node --test",
                     "template:future": "node scripts/future-factory-tool.mjs",
                 },
             })
@@ -230,12 +237,29 @@ test("emitOpenai allowlists runtime scripts and package commands", () => {
             existsSync(join(output, "scripts", "future-factory-tool.mjs")),
             false
         );
+        assert.equal(
+            existsSync(join(output, "scripts", "check-docs-cover.mjs")),
+            true
+        );
         const emittedPackage = JSON.parse(
             readFileSync(join(output, "package.json"), "utf8")
         );
-        assert.deepEqual(emittedPackage.scripts, { build: "vinext build" });
+        assert.deepEqual(emittedPackage.scripts, {
+            build: "vinext build",
+            "check:docs-cover": "node scripts/check-docs-cover.mjs",
+            test: "npm run test:unit && npm run check:docs-cover",
+            "test:unit": "node --test",
+        });
         assert.equal(OPENAI_SCRIPT_ALLOWLIST.includes("sites-env.sh"), true);
+        assert.equal(
+            OPENAI_SCRIPT_ALLOWLIST.includes("check-docs-cover.mjs"),
+            true
+        );
         assert.equal(OPENAI_PACKAGE_SCRIPT_ALLOWLIST.includes("build"), true);
+        assert.equal(
+            OPENAI_PACKAGE_SCRIPT_ALLOWLIST.includes("test:unit"),
+            true
+        );
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
