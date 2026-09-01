@@ -27,6 +27,7 @@ import {
     FORBIDDEN_DEPS,
     INSTALLED_PACKAGE_ARTIFACTS,
     INSTALLED_PACKAGE_COMMANDS,
+    INSTALLED_PACKAGE_REMOVE_OPTIONS,
     runInstalledPackageChecks,
     SHARED_PATHS,
 } from "./generate-lib.mjs";
@@ -102,20 +103,29 @@ function runArtifactValidator(root) {
 test("installed package checks use the emitted toolchain and clean artifacts", () => {
     const root = tempTree();
     const calls = [];
+    const removals = [];
     try {
-        runInstalledPackageChecks(root, "fixture", (command, args, options) => {
-            calls.push({
-                args: [...args],
-                command,
-                cwd: options.cwd,
-                stdio: options.stdio,
-            });
-            if (args[0] === "ci") {
-                for (const artifact of INSTALLED_PACKAGE_ARTIFACTS) {
-                    mkdirSync(join(root, artifact), { recursive: true });
+        runInstalledPackageChecks(
+            root,
+            "fixture",
+            (command, args, options) => {
+                calls.push({
+                    args: [...args],
+                    command,
+                    cwd: options.cwd,
+                    stdio: options.stdio,
+                });
+                if (args[0] === "ci") {
+                    for (const artifact of INSTALLED_PACKAGE_ARTIFACTS) {
+                        mkdirSync(join(root, artifact), { recursive: true });
+                    }
                 }
+            },
+            (path, options) => {
+                removals.push({ options, path });
+                rmSync(path, options);
             }
-        });
+        );
 
         assert.deepEqual(
             calls.map(({ args }) => args),
@@ -124,6 +134,18 @@ test("installed package checks use the emitted toolchain and clean artifacts", (
         assert.equal(calls.every(({ command }) => command === "npm"), true);
         assert.equal(calls.every(({ cwd }) => cwd === root), true);
         assert.equal(calls.every(({ stdio }) => stdio === "inherit"), true);
+        assert.deepEqual(
+            removals.map(({ options }) => options),
+            INSTALLED_PACKAGE_ARTIFACTS.map(
+                () => INSTALLED_PACKAGE_REMOVE_OPTIONS
+            )
+        );
+        assert.equal(
+            removals.every(({ path }, index) =>
+                path.endsWith(INSTALLED_PACKAGE_ARTIFACTS[index])
+            ),
+            true
+        );
         for (const artifact of INSTALLED_PACKAGE_ARTIFACTS) {
             assert.equal(existsSync(join(root, artifact)), false);
         }

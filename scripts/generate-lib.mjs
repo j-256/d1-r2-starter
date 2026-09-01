@@ -110,6 +110,13 @@ export const INSTALLED_PACKAGE_ARTIFACTS = Object.freeze([
     ".sites-runtime",
 ]);
 
+export const INSTALLED_PACKAGE_REMOVE_OPTIONS = Object.freeze({
+    force: true,
+    maxRetries: 5,
+    recursive: true,
+    retryDelay: 100,
+});
+
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist"]);
 const COPY_EXCLUDED_NAMES = new Set([".DS_Store", ".git", "node_modules"]);
 // Binary-ish extensions the content scan should skip (paths still checked)
@@ -125,7 +132,8 @@ export function copyGeneratedPath(from, to) {
 export function runInstalledPackageChecks(
     treeDir,
     label,
-    execute = execFileSync
+    execute = execFileSync,
+    remove = rmSync
 ) {
     try {
         for (const args of INSTALLED_PACKAGE_COMMANDS) {
@@ -137,7 +145,7 @@ export function runInstalledPackageChecks(
         }
     } finally {
         for (const artifact of INSTALLED_PACKAGE_ARTIFACTS) {
-            rmSync(join(treeDir, artifact), { recursive: true, force: true });
+            remove(join(treeDir, artifact), INSTALLED_PACKAGE_REMOVE_OPTIONS);
         }
     }
 }
