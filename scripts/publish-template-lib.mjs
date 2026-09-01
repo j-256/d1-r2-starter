@@ -18,11 +18,13 @@ import {
     TEMPLATE_BACKUP_COMMANDS,
     templateBackupRoot,
 } from "./template-backups-lib.mjs";
+import { FACTORY_DEPENDABOT_CONFIG_PATH } from "./generate-lib.mjs";
 import { TEMPLATE_VARIANTS } from "./template-variants.mjs";
 
 export { TEMPLATE_VARIANTS };
 
 const DEFAULT_BRANCH = "main";
+const DEPENDABOT_SECURITY_UPDATES_ENDPOINT = "automated-security-fixes";
 const FACTORY_REMOTE = "origin";
 const FACTORY_REVISION_VARIABLES = Object.freeze({
     openai: "TEMPLATE_OPENAI_FACTORY_REVISION",
@@ -166,6 +168,10 @@ function repositoryVariableEndpoint(repository, variable) {
     return `repos/${repository}/actions/variables/${variable}`;
 }
 
+function dependabotSecurityUpdatesEndpoint(repository) {
+    return `repos/${repository}/${DEPENDABOT_SECURITY_UPDATES_ENDPOINT}`;
+}
+
 export function repositoryVariableWriteArguments({
     repository,
     revision,
@@ -227,6 +233,52 @@ export function parseHttpStatus(output) {
 
     const errorMatch = output.match(/\(HTTP (\d{3})\)/);
     return errorMatch?.[1] ? Number.parseInt(errorMatch[1], 10) : null;
+}
+
+export function dependabotSecurityUpdatesEnabled(result) {
+    if (result.status !== 0) {
+        const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+        return parseHttpStatus(output) === NOT_FOUND_STATUS
+            ? false
+            : undefined;
+    }
+
+    let response;
+    try {
+        response = JSON.parse(result.stdout ?? "");
+    } catch {
+        throw new Error(
+            "GitHub returned invalid Dependabot security updates JSON."
+        );
+    }
+    if (typeof response.enabled !== "boolean") {
+        throw new Error(
+            "GitHub returned no Dependabot security updates state."
+        );
+    }
+    return response.enabled;
+}
+
+function assertDependabotSecurityUpdatesDisabled(repoRoot, repository) {
+    const args = ["api", dependabotSecurityUpdatesEndpoint(repository)];
+    const result = runCommand("gh", args, {
+        allowFailure: true,
+        cwd: repoRoot,
+    });
+    let enabled;
+    try {
+        enabled = dependabotSecurityUpdatesEnabled(result);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${repository}: ${message}`);
+    }
+    if (enabled === undefined) throw commandFailure("gh", args, result);
+    if (!enabled) return;
+
+    throw new Error([
+        `${repository}: Dependabot security updates must be disabled for generated templates.`,
+        `Disable them with: gh api --method DELETE repos/${repository}/${DEPENDABOT_SECURITY_UPDATES_ENDPOINT}`,
+    ].join("\n"));
 }
 
 export function resolvePublishInvocation(args) {
@@ -896,6 +948,11 @@ export async function publishTemplates(options, dependencies) {
                 config.outputDirectory,
                 workspace.checkout
             );
+            await dependencies.assertTemplatePolicy({
+                checkout: workspace.checkout,
+                repository: config.repository,
+                verifyRemote: exists,
+            });
             const changedPaths = await dependencies.collectChangedPaths(
                 workspace.checkout
             );
@@ -954,6 +1011,7 @@ export async function publishTemplates(options, dependencies) {
         for (const plan of plans.filter(
             ({ requiresPublication }) => !requiresPublication
         )) {
+            dependencies.log(`${plan.variant}: downstream policy verified`);
             await recordVerifiedFactoryRevision(
                 plan,
                 factoryRevision,
@@ -1012,6 +1070,9 @@ export async function publishTemplates(options, dependencies) {
                     dependencies
                 ));
                 if (commitCount === 0) {
+                    dependencies.log(
+                        `${plan.variant}: downstream policy verified`
+                    );
                     await recordVerifiedFactoryRevision(
                         plan,
                         factoryRevision,
@@ -1089,6 +1150,12 @@ export async function publishTemplates(options, dependencies) {
                 commit,
                 repository: plan.config.repository,
             });
+            await dependencies.assertTemplatePolicy({
+                checkout: plan.workspace.checkout,
+                repository: plan.config.repository,
+                verifyRemote: true,
+            });
+            dependencies.log(`${plan.variant}: downstream policy verified`);
             await recordVerifiedFactoryRevision(
                 plan,
                 factoryRevision,
@@ -1400,6 +1467,28 @@ export function createSystemDependencies(repoRoot) {
 
         async syncGeneratedTree(outputDirectory, checkout) {
             syncGeneratedTree(join(repoRoot, outputDirectory), checkout);
+        },
+
+        async assertTemplatePolicy({
+            checkout,
+            repository,
+            verifyRemote,
+        }) {
+            const configPath = join(
+                checkout,
+                ...FACTORY_DEPENDABOT_CONFIG_PATH.split("/")
+            );
+            if (existsSync(configPath)) {
+                throw new Error(
+                    `${repository}: generated template contains factory-owned ${FACTORY_DEPENDABOT_CONFIG_PATH}.`
+                );
+            }
+            if (verifyRemote) {
+                assertDependabotSecurityUpdatesDisabled(
+                    repoRoot,
+                    repository
+                );
+            }
         },
 
         async collectChangedPaths(checkout) {

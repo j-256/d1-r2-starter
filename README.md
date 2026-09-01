@@ -81,7 +81,7 @@ The default command preserves relevant factory checkpoints in both downstream hi
 npm run template:publish
 ```
 
-It requires a clean `main` whose commit matches `origin/main`, shows every downstream diff, asks for publication approval, verifies the resulting remote commits and template settings, and only then advances each factory-owned cursor.
+It requires a clean `main` whose commit matches `origin/main`, shows every downstream diff, asks for publication approval, verifies the resulting remote commits, template settings, and downstream Dependabot policy, and only then advances each factory-owned cursor.
 
 ## Releases
 

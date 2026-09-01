@@ -16,7 +16,9 @@ import {
     copyGeneratedPath,
     emitOpenai,
     emitWrangler,
+    FACTORY_DEPENDABOT_CONFIG_PATH,
     FACTORY_GUIDANCE_FILES,
+    GENERATED_FORBIDDEN_FILES,
     OPENAI_DROP_FILES,
     OPENAI_OVERLAY_FILES,
     OPENAI_PACKAGE_SCRIPT_ALLOWLIST,
@@ -182,6 +184,33 @@ test("scanForResidue passes a clean tree", () => {
         mkdirSync(join(root, "sub"));
         writeFileSync(join(root, "sub", "note.md"), "A Hono worker.\n");
         assert.deepEqual(scanForResidue(root), []);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("scanForResidue rejects factory Dependabot configuration", () => {
+    const root = tempTree();
+    try {
+        const configPath = join(
+            root,
+            ...FACTORY_DEPENDABOT_CONFIG_PATH.split("/")
+        );
+        mkdirSync(dirname(configPath), { recursive: true });
+        writeFileSync(configPath, "version: 2\n");
+        const violations = scanForResidue(root);
+        assert.equal(
+            violations.some((violation) =>
+                violation.includes(FACTORY_DEPENDABOT_CONFIG_PATH)
+            ),
+            true
+        );
+        assert.equal(
+            GENERATED_FORBIDDEN_FILES.includes(
+                FACTORY_DEPENDABOT_CONFIG_PATH
+            ),
+            true
+        );
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -372,10 +401,18 @@ test("emitOpenai keeps generated CI and drops factory Dependabot", () => {
             true
         );
         assert.equal(
-            existsSync(join(output, ".github", "dependabot.yml")),
+            existsSync(
+                join(
+                    output,
+                    ...FACTORY_DEPENDABOT_CONFIG_PATH.split("/")
+                )
+            ),
             false
         );
-        assert.equal(OPENAI_DROP_FILES.includes(".github/dependabot.yml"), true);
+        assert.equal(
+            OPENAI_DROP_FILES.includes(FACTORY_DEPENDABOT_CONFIG_PATH),
+            true
+        );
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -614,11 +651,14 @@ test("scanOpenaiResidue flags a leaked factory-only Dependabot config", () => {
     try {
         writeCleanOpenaiTree(root);
         mkdirSync(join(root, ".github"));
-        writeFileSync(join(root, ".github", "dependabot.yml"), "version: 2\n");
+        writeFileSync(
+            join(root, ...FACTORY_DEPENDABOT_CONFIG_PATH.split("/")),
+            "version: 2\n"
+        );
         const violations = scanOpenaiResidue(root);
         assert.equal(
             violations.some((violation) =>
-                violation.includes(".github/dependabot.yml")
+                violation.includes(FACTORY_DEPENDABOT_CONFIG_PATH)
             ),
             true
         );

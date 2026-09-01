@@ -14,6 +14,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
     createSystemDependencies,
+    dependabotSecurityUpdatesEnabled,
     factoryRevisionVariable,
     historyModeChoices,
     isAffirmativeResponse,
@@ -142,6 +143,7 @@ function fakeDependencies(options = {}) {
     const factoryRevisions = new Map(
         Object.entries(options.factoryRevisionsByVariant ?? {})
     );
+    const policyCallCounts = new Map();
     const trashedBackups = new Set();
 
     return {
@@ -196,6 +198,19 @@ function fakeDependencies(options = {}) {
             },
             async syncGeneratedTree(outputDirectory, checkout) {
                 operations.push(`sync:${outputDirectory}:${checkout}`);
+            },
+            async assertTemplatePolicy({ repository, verifyRemote }) {
+                operations.push(
+                    `assertTemplatePolicy:${repository}:${verifyRemote ? "remote" : "local"}`
+                );
+                const call = policyCallCounts.get(repository) ?? 0;
+                policyCallCounts.set(repository, call + 1);
+                const error = options.policyErrorSequenceByRepository?.[
+                    repository
+                ]?.[call]
+                    ?? options.policyErrorByRepository?.[repository]
+                    ?? options.policyError;
+                if (error) throw error;
             },
             async syncReplayTree({ checkout, snapshot }) {
                 operations.push(
@@ -813,6 +828,41 @@ test("parseHttpStatus recognizes GitHub API response formats", () => {
     assert.equal(parseHttpStatus("network unavailable\n"), null);
 });
 
+test("dependabotSecurityUpdatesEnabled accepts live and legacy disabled responses", () => {
+    assert.equal(
+        dependabotSecurityUpdatesEnabled({
+            status: 0,
+            stdout: '{"enabled":false,"paused":false}',
+        }),
+        false
+    );
+    assert.equal(
+        dependabotSecurityUpdatesEnabled({
+            status: 0,
+            stdout: '{"enabled":true,"paused":false}',
+        }),
+        true
+    );
+    assert.equal(
+        dependabotSecurityUpdatesEnabled({
+            status: 1,
+            stderr: "gh: Not Found (HTTP 404)\n",
+        }),
+        false
+    );
+    assert.equal(
+        dependabotSecurityUpdatesEnabled({
+            status: 1,
+            stderr: "network unavailable\n",
+        }),
+        undefined
+    );
+    assert.throws(
+        () => dependabotSecurityUpdatesEnabled({ status: 0, stdout: "{}" }),
+        /no Dependabot security updates state/
+    );
+});
+
 test("syncGeneratedTree replaces content while preserving Git metadata", () => {
     const root = tempTree();
     try {
@@ -892,6 +942,29 @@ test("system dependencies stage and commit explicit generated paths", async () =
         );
     } finally {
         if (workspace) await dependencies.cleanup(workspace);
+        rmSync(root, { force: true, recursive: true });
+    }
+});
+
+test("system dependencies reject a generated Dependabot configuration", async () => {
+    const root = tempTree();
+    const checkout = join(root, "checkout");
+    try {
+        mkdirSync(join(checkout, ".github"), { recursive: true });
+        writeFileSync(
+            join(checkout, ".github", "dependabot.yml"),
+            "version: 2\n"
+        );
+        const dependencies = createSystemDependencies(root);
+        await assert.rejects(
+            dependencies.assertTemplatePolicy({
+                checkout,
+                repository: OPENAI_REPOSITORY,
+                verifyRemote: false,
+            }),
+            /generated template contains factory-owned \.github\/dependabot\.yml/
+        );
+    } finally {
         rmSync(root, { force: true, recursive: true });
     }
 });
@@ -1803,6 +1876,14 @@ test("publishTemplates reports unchanged variants without staging", async () => 
         false
     );
     assert.equal(
+        fake.operations.indexOf(
+            `assertTemplatePolicy:${OPENAI_REPOSITORY}:remote`
+        ) < fake.operations.indexOf(
+            "recordFactoryRevision:openai:factory-head"
+        ),
+        true
+    );
+    assert.equal(
         fake.operations.includes(
             "recordFactoryRevision:openai:factory-head"
         ),
@@ -1815,6 +1896,94 @@ test("publishTemplates reports unchanged variants without staging", async () => 
         true
     );
     assert.equal(fake.operations.includes("log:Nothing published."), true);
+});
+
+test("publishTemplates rejects downstream policy drift before staging", async () => {
+    const fake = fakeDependencies({
+        exists: true,
+        policyError: new Error("Dependabot security updates must be disabled"),
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                help: false,
+                history: "append",
+                message: UPDATE_MESSAGE,
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /Dependabot security updates must be disabled/
+    );
+    assert.equal(
+        fake.operations.includes(
+            `assertTemplatePolicy:${OPENAI_REPOSITORY}:remote`
+        ),
+        true
+    );
+    assert.equal(
+        fake.operations.some((operation) => operation.startsWith("stage:")),
+        false
+    );
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith("recordFactoryRevision:")
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.includes(`cleanup:${OPENAI_REPOSITORY}`),
+        true
+    );
+});
+
+test("publishTemplates leaves the cursor unchanged when policy drifts after publication", async () => {
+    const fake = fakeDependencies({
+        exists: true,
+        policyErrorSequenceByRepository: {
+            [OPENAI_REPOSITORY]: [
+                undefined,
+                new Error("Dependabot security updates changed after push"),
+            ],
+        },
+    });
+
+    await assert.rejects(
+        publishTemplates(
+            {
+                help: false,
+                history: "append",
+                message: UPDATE_MESSAGE,
+                variant: "openai",
+                yes: true,
+            },
+            fake.dependencies
+        ),
+        /Dependabot security updates changed after push/
+    );
+    const remoteVerification = fake.operations.indexOf(
+        `verifyPublished:${OPENAI_REPOSITORY}`
+    );
+    const finalPolicyVerification = fake.operations.lastIndexOf(
+        `assertTemplatePolicy:${OPENAI_REPOSITORY}:remote`
+    );
+    assert.equal(
+        fake.operations.includes(`pushUpdate:${OPENAI_REPOSITORY}`),
+        true
+    );
+    assert.equal(remoteVerification < finalPolicyVerification, true);
+    assert.equal(
+        fake.operations.some((operation) =>
+            operation.startsWith("recordFactoryRevision:")
+        ),
+        false
+    );
+    assert.equal(
+        fake.operations.includes(`cleanup:${OPENAI_REPOSITORY}`),
+        true
+    );
 });
 
 test("publishTemplates creates a missing repository", async () => {

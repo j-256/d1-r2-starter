@@ -58,9 +58,14 @@ export const FACTORY_GUIDANCE_FILES = Object.freeze([
     "CLAUDE.md",
 ]);
 
+export const FACTORY_DEPENDABOT_CONFIG_PATH = ".github/dependabot.yml";
+export const GENERATED_FORBIDDEN_FILES = Object.freeze([
+    FACTORY_DEPENDABOT_CONFIG_PATH,
+]);
+
 export const OPENAI_DROP_FILES = [
     ...FACTORY_GUIDANCE_FILES,
-    ".github/dependabot.yml",
+    ...GENERATED_FORBIDDEN_FILES,
     "docs/PUBLISH.md",
 ];
 
@@ -182,6 +187,11 @@ function removeAllowedResidue(rel, contents) {
  */
 export function scanForResidue(root) {
     const violations = [];
+    for (const relPath of GENERATED_FORBIDDEN_FILES) {
+        if (existsSync(join(root, ...relPath.split("/")))) {
+            violations.push(`${relPath}: factory-only file must not ship`);
+        }
+    }
     for (const absolute of walk(root)) {
         const rel = relative(root, absolute).split(sep).join("/");
 

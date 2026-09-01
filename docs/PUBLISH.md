@@ -10,6 +10,8 @@ CI and GitHub security scanning still run independently in the factory and each 
 
 Treat downstream alerts as reports against generated products, but author dependency and code fixes in this factory and publish them through the normal template workflow. Keep automated Dependabot security updates disabled in generated repositories so GitHub cannot create output-only fixes that the next publication would replace.
 
+The generated-tree guards reject `.github/dependabot.yml` in either edition. Before any downstream write, the publisher verifies that automated Dependabot security updates remain disabled in each selected existing repository. It checks the generated policy and live setting again after publication and before advancing the factory cursor. A policy failure leaves the cursor unchanged and reports the command that disables the setting.
+
 The short version: use replay to preserve factory commit boundaries in template history; omit replay to publish one net snapshot commit per changed template.
 
 ## How publication works
@@ -39,11 +41,11 @@ The publisher performs the following work in clearly labeled phases:
 3. In replay mode, loads recorded cursors when requested and validates every selected baseline before cleanup or generation
 4. In clobber mode, moves selected retained recovery mirrors to Trash
 5. Runs the factory tooling tests and generates both templates once, even when both repositories are selected
-6. Compares every selected generated tree with its GitHub template repository in a disposable checkout
+6. Compares every selected generated tree with its GitHub template repository in a disposable checkout and verifies the downstream Dependabot policy
 7. Shows the complete staged diff for every planned publication
 8. For each changed existing repository, asks whether to append normal history or replace `main` with fresh history when `--history` was not supplied
 9. In normal mode, resolves the root-commit default or prompts for a missing append message; in replay mode, prepares the relevant factory checkpoint commits and shows each diff
-10. Asks for final yes-or-no publication approval, publishes `main` once, confirms the remote commit, and verifies that GitHub recognizes the repository as a template
+10. Asks for final yes-or-no publication approval, publishes `main` once, confirms the remote commit, and verifies the template and downstream Dependabot settings
 11. Records each verified template's factory revision in factory-repository metadata
 12. After an ordinary interactive fresh publication, offers a yes-or-no choice to move the verified recovery mirror to Trash
 13. Prints a compact summary showing whether each selected template was unchanged, created, updated, replaced, or cancelled
