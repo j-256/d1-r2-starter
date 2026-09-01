@@ -25,6 +25,9 @@ import {
     scanOpenaiResidue,
     RESIDUE_PATTERN,
     FORBIDDEN_DEPS,
+    INSTALLED_PACKAGE_ARTIFACTS,
+    INSTALLED_PACKAGE_COMMANDS,
+    runInstalledPackageChecks,
     SHARED_PATHS,
 } from "./generate-lib.mjs";
 
@@ -95,6 +98,60 @@ function runArtifactValidator(root) {
         stdio: ["ignore", "pipe", "pipe"],
     });
 }
+
+test("installed package checks use the emitted toolchain and clean artifacts", () => {
+    const root = tempTree();
+    const calls = [];
+    try {
+        runInstalledPackageChecks(root, "fixture", (command, args, options) => {
+            calls.push({
+                args: [...args],
+                command,
+                cwd: options.cwd,
+                stdio: options.stdio,
+            });
+            if (args[0] === "ci") {
+                for (const artifact of INSTALLED_PACKAGE_ARTIFACTS) {
+                    mkdirSync(join(root, artifact), { recursive: true });
+                }
+            }
+        });
+
+        assert.deepEqual(
+            calls.map(({ args }) => args),
+            INSTALLED_PACKAGE_COMMANDS
+        );
+        assert.equal(calls.every(({ command }) => command === "npm"), true);
+        assert.equal(calls.every(({ cwd }) => cwd === root), true);
+        assert.equal(calls.every(({ stdio }) => stdio === "inherit"), true);
+        for (const artifact of INSTALLED_PACKAGE_ARTIFACTS) {
+            assert.equal(existsSync(join(root, artifact)), false);
+        }
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("installed package checks clean artifacts after a failed command", () => {
+    const root = tempTree();
+    try {
+        assert.throws(
+            () =>
+                runInstalledPackageChecks(root, "fixture", (_command, args) => {
+                    for (const artifact of INSTALLED_PACKAGE_ARTIFACTS) {
+                        mkdirSync(join(root, artifact), { recursive: true });
+                    }
+                    if (args[0] === "run") throw new Error("typecheck failed");
+                }),
+            /typecheck failed/
+        );
+        for (const artifact of INSTALLED_PACKAGE_ARTIFACTS) {
+            assert.equal(existsSync(join(root, artifact)), false);
+        }
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
 
 test("scanForResidue passes a clean tree", () => {
     const root = tempTree();

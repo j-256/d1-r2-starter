@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
     emitOpenai,
     emitWrangler,
+    runInstalledPackageChecks,
     scanForResidue,
     scanOpenaiResidue,
 } from "./generate-lib.mjs";
@@ -52,6 +53,6 @@ console.log("Generating dist/wrangler ...");
 const wranglerDir = join(distRoot, "wrangler");
 emitWrangler(repoRoot, wranglerDir);
 runResidueGuard(wranglerDir, "wrangler");
-runInTreeTests(wranglerDir, "wrangler");
+runInstalledPackageChecks(wranglerDir, "wrangler");
 
 console.log("\nDone. Emitted dist/openai and dist/wrangler.");

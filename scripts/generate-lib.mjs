@@ -7,6 +7,7 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { basename, join, relative, sep } from "node:path";
 
 // Paths copied verbatim into BOTH emitted trees. This is the shared product
@@ -98,6 +99,17 @@ export const WRANGLER_PACKAGE_FILES = Object.freeze([
     "package-lock.json",
 ]);
 
+export const INSTALLED_PACKAGE_COMMANDS = Object.freeze([
+    Object.freeze(["ci"]),
+    Object.freeze(["test"]),
+    Object.freeze(["run", "typecheck"]),
+]);
+
+export const INSTALLED_PACKAGE_ARTIFACTS = Object.freeze([
+    "node_modules",
+    ".sites-runtime",
+]);
+
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist"]);
 const COPY_EXCLUDED_NAMES = new Set([".DS_Store", ".git", "node_modules"]);
 // Binary-ish extensions the content scan should skip (paths still checked)
@@ -108,6 +120,26 @@ export function copyGeneratedPath(from, to) {
         filter: (source) => !COPY_EXCLUDED_NAMES.has(basename(source)),
         recursive: true,
     });
+}
+
+export function runInstalledPackageChecks(
+    treeDir,
+    label,
+    execute = execFileSync
+) {
+    try {
+        for (const args of INSTALLED_PACKAGE_COMMANDS) {
+            console.log(`  running npm ${args.join(" ")} in ${label} ...`);
+            execute("npm", args, {
+                cwd: treeDir,
+                stdio: "inherit",
+            });
+        }
+    } finally {
+        for (const artifact of INSTALLED_PACKAGE_ARTIFACTS) {
+            rmSync(join(treeDir, artifact), { recursive: true, force: true });
+        }
+    }
 }
 
 function walk(root) {
