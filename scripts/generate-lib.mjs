@@ -52,7 +52,13 @@ export const OPENAI_SCRIPT_ALLOWLIST = Object.freeze([
 // Factory-only files that live at non-dropped root paths and so survive the
 // copy-root, but must not ship in the openai template. Repo-relative POSIX
 // paths, scrubbed after the copy in emitOpenai
+export const FACTORY_GUIDANCE_FILES = Object.freeze([
+    "AGENTS.md",
+    "CLAUDE.md",
+]);
+
 export const OPENAI_DROP_FILES = [
+    ...FACTORY_GUIDANCE_FILES,
     ".github/dependabot.yml",
     "docs/PUBLISH.md",
 ];

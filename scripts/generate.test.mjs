@@ -16,6 +16,7 @@ import {
     copyGeneratedPath,
     emitOpenai,
     emitWrangler,
+    FACTORY_GUIDANCE_FILES,
     OPENAI_DROP_FILES,
     OPENAI_OVERLAY_FILES,
     OPENAI_PACKAGE_SCRIPT_ALLOWLIST,
@@ -296,6 +297,35 @@ test("emitOpenai keeps generated CI and drops factory Dependabot", () => {
             false
         );
         assert.equal(OPENAI_DROP_FILES.includes(".github/dependabot.yml"), true);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("generated editions omit factory agent guidance", () => {
+    const root = tempTree();
+    try {
+        const source = join(root, "source");
+        const openaiOutput = join(root, "openai-output");
+        const wranglerOutput = join(root, "wrangler-output");
+        const wranglerOverlay = writeWranglerFactoryFixture(source);
+        mkdirSync(join(source, ".openai"));
+        mkdirSync(join(source, "scripts"));
+        writeOpenaiOverlay(source);
+        writeFileSync(join(source, "AGENTS.md"), "# Factory guidance\n");
+        writeFileSync(join(source, "CLAUDE.md"), "AGENTS.md\n");
+        writeFileSync(join(source, ".openai", "hosting.json"), "{}\n");
+        writeFileSync(join(source, "package.json"), "{}\n");
+        writeFileSync(join(wranglerOverlay, "package-lock.json"), "{}\n");
+
+        emitOpenai(source, openaiOutput);
+        emitWrangler(source, wranglerOutput);
+
+        for (const guidanceFile of FACTORY_GUIDANCE_FILES) {
+            assert.equal(OPENAI_DROP_FILES.includes(guidanceFile), true);
+            assert.equal(existsSync(join(openaiOutput, guidanceFile)), false);
+            assert.equal(existsSync(join(wranglerOutput, guidanceFile)), false);
+        }
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
