@@ -379,6 +379,35 @@ test("parsePublishArguments accepts a variant, history, message, and confirmatio
     );
 });
 
+test("parsePublishArguments keeps short and long publication options equivalent", () => {
+    assert.deepEqual(
+        parsePublishArguments([
+            "openai",
+            "--history=fresh",
+            "-m",
+            UPDATE_MESSAGE,
+            "-y",
+        ]),
+        parsePublishArguments([
+            "openai",
+            "--history=fresh",
+            "--message",
+            UPDATE_MESSAGE,
+            "--yes",
+        ])
+    );
+    assert.deepEqual(
+        parsePublishArguments(["all", "--history", "append", "-r", "-y"]),
+        parsePublishArguments([
+            "all",
+            "--history",
+            "append",
+            "--replay",
+            "--yes",
+        ])
+    );
+});
+
 test("parsePublishArguments expands clobber to fresh history", () => {
     assert.deepEqual(
         parsePublishArguments(["all", "--clobber", "--yes"]),
@@ -496,8 +525,11 @@ test("publishUsage documents history modes and persistent backups", () => {
     assert.match(usage, /both is an alias/);
     assert.match(usage, /--history append\|fresh/);
     assert.match(usage, /--clobber/);
-    assert.match(usage, /--replay\s/);
+    assert.match(usage, /-m, --message/);
+    assert.match(usage, /-r, --replay\s/);
     assert.match(usage, /--replay-from/);
+    assert.match(usage, /-y, --yes/);
+    assert.match(usage, /-h, --help/);
     assert.match(usage, /root commits default to Initial commit/);
     assert.match(usage, /existing repos need history or clobber/);
     assert.match(usage, /TEMPLATE_PUBLISH_BACKUP_DIR/);

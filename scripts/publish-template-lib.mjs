@@ -255,7 +255,7 @@ export function parsePublishArguments(args) {
             help = true;
             continue;
         }
-        if (argument === "--yes") {
+        if (argument === "--yes" || argument === "-y") {
             yes = true;
             continue;
         }
@@ -263,7 +263,7 @@ export function parsePublishArguments(args) {
             clobber = true;
             continue;
         }
-        if (argument === "--replay") {
+        if (argument === "--replay" || argument === "-r") {
             replay = true;
             continue;
         }
@@ -280,7 +280,7 @@ export function parsePublishArguments(args) {
             history = argument.slice("--history=".length);
             continue;
         }
-        if (argument === "--message") {
+        if (argument === "--message" || argument === "-m") {
             const candidate = args[index + 1];
             if (!candidate || candidate.startsWith("-")) {
                 throw new Error("--message requires a value.");
@@ -380,11 +380,11 @@ export function publishUsage() {
         "  openai|wrangler      Limit publication to one template",
         "  --history <mode>     Append to main or replace it with fresh history",
         "  --clobber            Replace history and Trash selected recovery mirrors",
-        "  --message <message>  Set the normal publication message; root commits default to Initial commit",
-        "  --replay             Replay checkpoints after each template's factory-owned cursor",
+        "  -m, --message <message>  Set the normal publication message; root commits default to Initial commit",
+        "  -r, --replay         Replay checkpoints after each template's factory-owned cursor",
         "  --replay-from <rev>  Bootstrap or recover cursors from an explicit factory revision",
-        "  --yes                Authorize without prompts; existing repos need history or clobber",
-        "  --help               Show this help",
+        "  -y, --yes            Authorize without prompts; existing repos need history or clobber",
+        "  -h, --help           Show this help",
         "",
         "Environment:",
         "  TEMPLATE_PUBLISH_BACKUP_DIR  Override the persistent fresh-mode mirror directory",
