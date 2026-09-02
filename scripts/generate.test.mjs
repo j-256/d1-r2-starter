@@ -35,10 +35,22 @@ import {
 } from "./generate-lib.mjs";
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const REPOSITORY_ROOT = join(SCRIPT_DIRECTORY, "..");
 const VALIDATE_ARTIFACT_SCRIPT = join(
     SCRIPT_DIRECTORY,
     "validate-artifact.sh"
 );
+const ROOT_INSTALL_SCRIPT_APPROVALS = Object.freeze({
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true,
+    "unrs-resolver@1.11.1": true,
+    "workerd@1.20260828.1": true,
+});
+const WRANGLER_INSTALL_SCRIPT_APPROVALS = Object.freeze({
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true,
+    "workerd@1.20260828.1": true,
+});
 const REQUIRED_SITE_MIGRATIONS = Object.freeze([
     "0000_create-documents.sql",
     "meta/_journal.json",
@@ -101,6 +113,24 @@ function runArtifactValidator(root) {
         stdio: ["ignore", "pipe", "pipe"],
     });
 }
+
+test("manifests approve reviewed dependency install scripts", () => {
+    const rootPackage = JSON.parse(
+        readFileSync(join(REPOSITORY_ROOT, "package.json"), "utf8")
+    );
+    const wranglerPackage = JSON.parse(
+        readFileSync(
+            join(REPOSITORY_ROOT, "variants", "wrangler", "package.json"),
+            "utf8"
+        )
+    );
+
+    assert.deepEqual(rootPackage.allowScripts, ROOT_INSTALL_SCRIPT_APPROVALS);
+    assert.deepEqual(
+        wranglerPackage.allowScripts,
+        WRANGLER_INSTALL_SCRIPT_APPROVALS
+    );
+});
 
 test("installed package checks use the emitted toolchain and clean artifacts", () => {
     const root = tempTree();
@@ -325,6 +355,7 @@ test("emitOpenai allowlists runtime scripts and package commands", () => {
         writeFileSync(
             join(source, "package.json"),
             JSON.stringify({
+                allowScripts: ROOT_INSTALL_SCRIPT_APPROVALS,
                 scripts: {
                     build: "vinext build",
                     "check:docs-cover": "node scripts/check-docs-cover.mjs",
@@ -359,6 +390,10 @@ test("emitOpenai allowlists runtime scripts and package commands", () => {
             test: "npm run test:unit && npm run check:docs-cover",
             "test:unit": "node --test",
         });
+        assert.deepEqual(
+            emittedPackage.allowScripts,
+            ROOT_INSTALL_SCRIPT_APPROVALS
+        );
         assert.equal(OPENAI_SCRIPT_ALLOWLIST.includes("sites-env.sh"), true);
         assert.equal(
             OPENAI_SCRIPT_ALLOWLIST.includes("check-docs-cover.mjs"),
